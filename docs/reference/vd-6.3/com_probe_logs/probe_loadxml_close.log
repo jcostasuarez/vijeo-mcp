@@ -1,0 +1,20 @@
+[01:06:59.188] OK   CreateObject(VijeoFrame.VijeoDesigner2) (253 ms) -> <ComObject>
+[01:07:02.869] IsAvailable=1 after 3.7s
+[01:07:02.882] frame: pid=9804 title='Vijeo-Frame' visible=True
+[01:07:03.418] OK   NewProject('MCPXmlHost','','') (532 ms) -> <ComObject>
+[01:07:05.093] OK   pre NewTarget('XmlHMI','Model_HMIS5T') (1643 ms) -> <ComObject>
+[01:07:05.839] OK     pre LookupTag(MCP_X) (745 ms) -> [String] <Result><Exists>false</Exists><Type></Type></Result>
+
+[01:07:05.933] OK   LoadXMLCommand(%TEMP%\scratch\vjd_out_loadxml\v1_min.xml) (82 ms) -> [String] <Result/>
+
+[01:07:05.933]   errorfile: ------------------------------------------------------------------------------ 
+[01:07:06.002] OK     host.Name (59 ms) -> [String] MCPXmlHost
+[01:07:06.065] OK     host.GetTargetNames (62 ms) -> [String] XmlHMI
+[01:07:06.360] OK     [XmlHMI] Type (157 ms) -> [String] Model_HMIS5T
+[01:07:06.401] OK     [XmlHMI] LookupTag(MCP_X) (37 ms) -> [String] <Result><Exists>false</Exists><Type></Type></Result>
+
+[01:07:06.548] OK     Save(%TEMP%\scratch\vjd_out_loadxml\v1_min.xml.vdz) (154 ms) -> <null>
+[01:07:06.809] OK     Close (261 ms) -> <null>
+[01:07:06.825] workdir: \v1_min.xml(206), \v1_min.xml.err.txt(81), \v1_min.xml.vdz(7818), \v2_target.xml(431), \v2_target.xml.err.txt(81), \v2_target.xml.vdz(7816)
+[01:07:06.965] OK   Exit (129 ms) -> <null>
+[01:07:07.132] done

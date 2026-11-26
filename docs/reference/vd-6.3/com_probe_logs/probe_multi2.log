@@ -1,0 +1,23 @@
+[03:05:07.702] OK   CreateObject(VijeoFrame.VijeoDesigner2) (192 ms) -> <ComObject>
+[03:05:11.400] IsAvailable=1 after 3.7s
+[03:05:11.413] frame: pid=10840 title='Vijeo-Frame' visible=True
+[03:05:11.572] OK   CreateObject #2(VijeoFrame.VijeoDesigner2) (154 ms) -> <ComObject>
+[03:05:14.846] #2 IsAvailable=1 tras 3.2s; procesos: 10136,10840
+[03:05:17.229] OK   #1 OpenProject(A) (2379 ms) -> <ComObject>
+[03:05:19.886] OK   #2 OpenProject(B) (2653 ms) -> <ComObject>
+[03:05:20.767] OK   #1 Name (864 ms) -> [String] Compact_Hardwired_M221
+[03:05:20.854] OK   #1 GetTargetNames (79 ms) -> [String] HMISTU855
+[03:05:21.008] OK   #2 Name (150 ms) -> [String] Material Working_Drill machine_H
+[03:05:21.043] OK   #2 GetTargetNames (33 ms) -> [String] HMISTU855
+[03:05:21.854] OK   #1 NewTarget(Extra1) (809 ms) -> <ComObject>
+[03:05:21.901] OK   #1 GetTargetNames (30 ms) -> array[2]: [String] Extra1 | [String] HMISTU855
+[03:05:21.932] OK   #2 GetTargetNames (no debe ver Extra1) (28 ms) -> [String] HMISTU855
+[03:05:22.252] OK   #1 Save (330 ms) -> <null>
+[03:05:22.965] OK   #1 Close (704 ms) -> <null>
+[03:05:23.299] OK   #2 Save (327 ms) -> <null>
+[03:05:23.943] OK   #2 Close (639 ms) -> <null>
+[03:05:23.952] carpetas temporales: 
+[03:05:24.323] OK   #2 Exit (369 ms) -> <null>
+[03:05:24.356] workdir: \A_saved.vdz(2149472), \B_saved.vdz(2334312)
+[03:05:24.434] OK   Exit (75 ms) -> <null>
+[03:05:24.525] done

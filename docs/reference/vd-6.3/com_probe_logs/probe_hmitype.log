@@ -1,0 +1,32 @@
+[01:20:37.565] OK   CreateObject(VijeoFrame.VijeoDesigner2) (287 ms) -> <ComObject>
+[01:20:42.243] IsAvailable=1 after 4.7s
+[01:20:42.263] frame: pid=6020 title='Vijeo-Frame' visible=True
+[01:20:42.884] OK   NewProject('MCPHmiType','','') (616 ms) -> <ComObject>
+[01:20:43.850] OK   NewTarget('V1','Model_HMIG3U') (962 ms) -> <null>
+[01:20:44.858] OK   NewTarget('V2','Model_HMIG3U:HMIDT351') (1004 ms) -> <ComObject>
+[01:20:45.650] OK     Type (728 ms) -> [String] Model_HMIG3U:HMIDT651 (1280x800)
+[01:20:45.911] OK     Delete (257 ms) -> <null>
+[01:20:46.780] OK   NewTarget('V3','Model_HMIG3U:HMIDT351 (800x480)') (855 ms) -> <ComObject>
+[01:20:46.905] OK     Type (123 ms) -> [String] Model_HMIG3U:HMIDT351 (800x480)
+[01:20:47.037] OK     Delete (129 ms) -> <null>
+[01:20:47.198] OK   NewTarget('V4','HMIDT351:Model_HMIG3U') (172 ms) -> <null>
+[01:20:47.367] OK   NewTarget('V5','Target_HMIGTU:Model_HMIG3U') (160 ms) -> <null>
+[01:20:47.536] OK   NewTarget('V6','Target=Model_HMIG3U,Control=False') (160 ms) -> <null>
+[01:20:47.683] OK   NewTarget('V7','Target=Model_HMIG3U,Control=True') (155 ms) -> <null>
+[01:20:48.523] OK   NewTarget('V8','Target=Model_HMIG3U:HMIDT351,Control=False') (828 ms) -> <ComObject>
+[01:20:48.601] OK     Type (77 ms) -> [String] Model_HMIG3U:HMIDT651 (1280x800)
+[01:20:48.724] OK     Delete (123 ms) -> <null>
+[01:20:49.559] OK   NewTarget('V9','Target=Model_HMISAC,Control=False') (830 ms) -> <ComObject>
+[01:20:49.637] OK     Type (76 ms) -> [String] Target=Model_HMISAC,Control=True
+[01:20:49.760] OK     Delete (129 ms) -> <null>
+[01:20:50.630] OK   NewTarget('V10','Target=Model_HMISAC,Control=True') (859 ms) -> <ComObject>
+[01:20:50.731] OK     Type (99 ms) -> [String] Target=Model_HMISAC,Control=True
+[01:20:50.862] OK     Delete (136 ms) -> <null>
+[01:20:51.025] OK   NewTarget('V11','Model_HMIS5T,Resize=True') (168 ms) -> <null>
+[01:20:51.881] OK   NewTarget('V12','Target=Model_HMIS5T,Control=False') (838 ms) -> <ComObject>
+[01:20:51.969] OK     Type (87 ms) -> [String] Model_HMIS5T
+[01:20:52.105] OK     Delete (138 ms) -> <null>
+[01:20:52.280] OK   Close (177 ms) -> <null>
+[01:20:52.296] workdir: \models_validation.csv(5511)
+[01:20:52.482] OK   Exit (172 ms) -> <null>
+[01:20:52.791] done

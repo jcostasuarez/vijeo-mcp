@@ -1,0 +1,12 @@
+[package]
+name = "vijeo-dat"
+description = "Descifra los ficheros .dat cifrados de Vijeo-Designer (catálogos TargetInfo y XML)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "vjd-dat"
+path = "src/main.rs"
+
+[dependencies]

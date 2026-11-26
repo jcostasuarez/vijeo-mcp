@@ -1,0 +1,9 @@
+[01:03:34.297] OK   CreateObject(VijeoFrame.VijeoDesigner2) (178 ms) -> <ComObject>
+[01:03:37.946] IsAvailable=1 after 3.6s
+[01:03:37.960] frame: pid=10320 title='Vijeo-Frame' visible=True
+[01:03:38.029] OK   GetLastErrorMessage (66 ms) -> <null>
+[01:03:38.114] OK   GenericCall(<invalid>) (75 ms) -> [String] UNHANDLED COMMAND
+[01:03:38.198] OK   GenericCall(Foo) (81 ms) -> [String] UNHANDLED COMMAND
+[01:03:38.203] workdir: 
+[01:03:38.265] OK   Exit (59 ms) -> <null>
+[01:03:38.310] done

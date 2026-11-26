@@ -1,0 +1,11 @@
+[package]
+name = "vijeo-ui"
+description = "Control de Vijeo-Frame por su interfaz (ventanas, diálogos, Navigator, Feedback Zone) y procesos, sin COM"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+vijeo-core.workspace = true
+tracing.workspace = true
+windows.workspace = true

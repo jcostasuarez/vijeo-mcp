@@ -1,0 +1,13 @@
+[01:05:50.047] OK   CreateObject(VijeoFrame.VijeoDesigner2) (227 ms) -> <ComObject>
+[01:05:53.694] IsAvailable=1 after 3.6s
+[01:05:53.708] frame: pid=10152 title='Vijeo-Frame' visible=True
+[01:05:54.243] OK   NewProject('MCPXmlHost','','') (532 ms) -> <ComObject>
+[01:05:54.331] OK   LoadXMLCommand(%TEMP%\scratch\vjd_out_loadxml\v2_target.xml) (73 ms) -> [String] <Result/>
+
+[01:05:54.340]   errorfile: ------------------------------------------------------------------------------ 
+[01:05:55.183] OK     host.Name (812 ms) -> [String] MCPXmlHost
+[01:05:55.246] OK     host.GetTargetNames (61 ms) -> <null>
+[01:05:55.355] OK     Save(%TEMP%\scratch\vjd_out_loadxml\v2_target.xml.vdz) (105 ms) -> <null>
+[01:05:55.368] workdir: \v1_min.xml(206), \v1_min.xml.err.txt(81), \v1_min.xml.vdz(1037), \v2_target.xml(431), \v2_target.xml.err.txt(81), \v2_target.xml.vdz(1039)
+[01:05:55.433] OK   Exit (63 ms) -> <null>
+[01:05:55.509] done

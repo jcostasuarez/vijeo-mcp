@@ -1,0 +1,22 @@
+[package]
+name = "vijeo-backend-vd63"
+description = "Backend de Vijeo-Designer 6.3 (maneja Vijeo-Frame por su interfaz, sin COM)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+vijeo-core.workspace = true
+vijeo-ui.workspace = true
+vijeo-dat.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+roxmltree.workspace = true
+cfb.workspace = true
+zip.workspace = true
+
+[features]
+# Pruebas que lanzan Vijeo-Designer de verdad.
+live-vijeo = []

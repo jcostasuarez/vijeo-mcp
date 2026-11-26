@@ -1,0 +1,42 @@
+[00:29:00.593] OK   CreateObject(VijeoFrame.VijeoDesigner2) (212 ms) -> <ComObject>
+[00:29:03.206] IsAvailable=1 after 2.6s
+[00:29:03.223] frame: pid=844 title='Vijeo-Frame' visible=True
+[00:29:05.166] OK   OpenProject(%TEMP%\scratch\vjd_work\Compact_Hardwired_M221.vdz) (1939 ms) -> <ComObject>
+[00:29:06.169] OK   GetTarget(HMISTU855) (155 ms) -> <ComObject>
+[00:29:06.783] FAIL GetPanel('Start') (610 ms) -> Error HRESULT E_FAIL has been returned from a call to a COM component.
+[00:29:06.841] OK     Target.GetLastErrorMessage (54 ms) -> <null>
+[00:29:06.869] FAIL GetPanel('\Start') (26 ms) -> Error HRESULT E_FAIL has been returned from a call to a COM component.
+[00:29:06.901] OK     Target.GetLastErrorMessage (30 ms) -> <null>
+[00:29:06.931] FAIL GetPanel('BP:Start') (28 ms) -> Error HRESULT E_FAIL has been returned from a call to a COM component.
+[00:29:06.962] OK     Target.GetLastErrorMessage (29 ms) -> <null>
+[00:29:06.993] FAIL GetPanel('Panel:Start') (29 ms) -> Error HRESULT E_FAIL has been returned from a call to a COM component.
+[00:29:07.026] OK     Target.GetLastErrorMessage (30 ms) -> <null>
+[00:29:07.061] FAIL GetPanel('BP:\Start') (32 ms) -> Error HRESULT E_FAIL has been returned from a call to a COM component.
+[00:29:07.093] OK     Target.GetLastErrorMessage (30 ms) -> <null>
+[00:29:07.150] OK   GetBindingOfVariable(MyController.Alarms.xAlarmEStop_1) (55 ms) -> <null>
+[00:29:07.219] OK   Target.GenericCall(LookupTagCommand <TagName>MyController.Alarms.xAlarmEStop_1</TagName>) (61 ms) -> [String] UNHANDLED COMMAND
+[00:29:07.278] OK   Designer.GenericCall(LookupTagCommand <TagName>MyController.Alarms.xAlarmEStop_1</TagName>) (58 ms) -> [String] UNHANDLED COMMAND
+[00:29:07.307] OK   Project.GenericCall(LookupTagCommand <TagName>MyController.Alarms.xAlarmEStop_1</TagName>) (27 ms) -> <null>
+[00:29:07.338] OK   Target.GenericCall(LookupTagCommand <TagName>__NoSuchTag__</TagName>) (29 ms) -> [String] UNHANDLED COMMAND
+[00:29:07.371] OK   Designer.GenericCall(LookupTagCommand <TagName>__NoSuchTag__</TagName>) (31 ms) -> [String] UNHANDLED COMMAND
+[00:29:07.401] OK   Project.GenericCall(LookupTagCommand <TagName>__NoSuchTag__</TagName>) (28 ms) -> <null>
+[00:29:07.431] OK   Target.GenericCall(LookupTag <TagName>MyController.Alarms.xAlarmEStop_1</TagName>) (29 ms) -> [String] UNHANDLED COMMAND
+[00:29:07.463] OK   Designer.GenericCall(LookupTag <TagName>MyController.Alarms.xAlarmEStop_1</TagName>) (29 ms) -> [String] UNHANDLED COMMAND
+[00:29:07.493] OK   Project.GenericCall(LookupTag <TagName>MyController.Alarms.xAlarmEStop_1</TagName>) (28 ms) -> <null>
+[00:29:07.525] OK   Target.GenericCall(LookupTag <TagName>__NoSuchTag__</TagName>) (31 ms) -> [String] UNHANDLED COMMAND
+[00:29:07.558] OK   Designer.GenericCall(LookupTag <TagName>__NoSuchTag__</TagName>) (31 ms) -> [String] UNHANDLED COMMAND
+[00:29:07.588] OK   Project.GenericCall(LookupTag <TagName>__NoSuchTag__</TagName>) (29 ms) -> <null>
+[00:29:07.635] OK   Designer.GenericCall(LoadXMLCommand missing file) (43 ms) -> [String] UNHANDLED COMMAND
+[00:29:07.667] OK   Designer.GenericCall(LoadXML missing file) (29 ms) -> [String] UNHANDLED COMMAND
+[00:29:08.385] OK   NewTarget('P_Model_HMIS5T','Model_HMIS5T') (715 ms) -> <ComObject>
+[00:29:08.541] OK     NewTarget.Type (155 ms) -> [String] Model_HMIS5T
+[00:29:08.607] OK     NewTarget.Name (62 ms) -> [String] P_Model_HMIS5T
+[00:29:09.276] OK   NewTarget('P_Model_HMIGTO5310','Model_HMIGTO5310') (668 ms) -> <ComObject>
+[00:29:09.401] OK     NewTarget.Type (122 ms) -> [String] Model_HMIGTO5310
+[00:29:09.430] OK     NewTarget.Name (27 ms) -> [String] P_Model_HMIGTO5310
+[00:29:09.555] OK   NewTarget('P_Model_HMISTU855','Model_HMISTU855') (123 ms) -> <null>
+[00:29:09.599] OK   GetTargetNames (after NewTarget) (34 ms) -> array[3]: [String] P_Model_HMIGTO5310 | [String] P_Model_HMIS5T | [String] HMISTU855
+[00:29:10.326] OK   Project.Close (725 ms) -> <null>
+[00:29:10.331] workdir: 
+[00:29:10.478] OK   Exit (144 ms) -> <null>
+[00:29:10.634] done

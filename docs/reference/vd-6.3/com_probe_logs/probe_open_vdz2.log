@@ -1,0 +1,28 @@
+[00:27:58.874] OK   CreateObject(VijeoFrame.VijeoDesigner2) (184 ms) -> <ComObject>
+[00:28:02.541] IsAvailable=1 after 3.7s
+[00:28:02.555] frame: pid=9408 title='Vijeo-Frame' visible=True
+[00:28:04.480] OK   OpenProject(%TEMP%\scratch\vjd_work\Compact_Hardwired_M221.vdz) (1921 ms) -> <ComObject>
+[00:28:04.559] OK   GetLastErrorMessage (77 ms) -> <null>
+[00:28:05.391] OK   Project.Name (791 ms) -> [String] Compact_Hardwired_M221
+[00:28:05.433] OK   Project.IsDirty (39 ms) -> [Int32] 0
+[00:28:05.497] OK   Project.GetTargetNames (61 ms) -> [String] HMISTU855
+[00:28:05.665] OK   GetTarget(HMISTU855) (165 ms) -> <ComObject>
+[00:28:06.214] OK     [HMISTU855] Type (542 ms) -> [String] Model_HMIS5T
+[00:28:06.309] OK     [HMISTU855] GetPanelNames (61 ms) -> array[12]: [String] BP:\Start | [String] BP:\Cabinet | [String] BP:\Alarms | [String] BP:\ATV312 | [String] BP:\iEM_Energy | [String] BP:\LXM28 | [String] BP:\ATV12 | [String] BP:\AnalogIOs | [String] BP:\DateAndTime | [String] BP:\IOs_TM3SAF | [String] BP:\IOs_M221 | [String] BP:\IOs_TM3DQ16
+[00:28:06.420] FAIL     GetPanel(BP:\Start) (106 ms) -> Error HRESULT E_FAIL has been returned from a call to a COM component.
+[00:28:06.463] OK     [HMISTU855] GenericCall(LookupTag missing, elem) (41 ms) -> [String] UNHANDLED COMMAND
+[00:28:06.494] OK     [HMISTU855] GenericCall(LookupTag empty) (29 ms) -> [String] UNHANDLED COMMAND
+[00:28:13.657] OK     [HMISTU855] Build (7160 ms) -> [String] ret=0 warnings=2
+[00:28:13.731] OK     [HMISTU855] GetLastErrorMessage (71 ms) -> <null>
+[00:28:15.023] OK   Project.GenerateAllReports(%TEMP%\scratch\vjd_out_vdz2\reports) (1287 ms) -> <null>
+[00:28:15.107] OK   Project.GetCrossReferences(%TEMP%\scratch\vjd_out_vdz2\crossref.xml) (83 ms) -> <null>
+[00:28:15.133] OK   Project.GetLastErrorMessage (24 ms) -> <null>
+[00:28:15.304] OK   NewTarget('ProbeT','Model_HMISTU855') (169 ms) -> <null>
+[00:28:15.338] OK   Project.GetLastErrorMessage (32 ms) -> <null>
+[00:28:15.371] OK   Project.GetTargetNames (after NewTarget) (30 ms) -> [String] HMISTU855
+[00:28:15.400] OK   Project.IsDirty (after NewTarget) (28 ms) -> [Int32] 1
+[00:28:15.712] OK   Project.Save(%TEMP%\scratch\vjd_out_vdz2\saved_copy.vdz) (310 ms) -> <null>
+[00:28:16.206] OK   Project.Close (490 ms) -> <null>
+[00:28:16.225] workdir: \crossref.xml(63), \saved_copy.vdz(2147288), \reports\ReportNames.xml(363), \reports\HMISTU855\Actions\index.html(3444), \reports\HMISTU855\Panels\index.html(23522), \reports\HMISTU855\Panels\_fxtemp_Panel244.emf(103932), \reports\HMISTU855\Panels\_fxtemp_Panel246.emf(116420), \reports\HMISTU855\Panels\_fxtemp_Panel247.emf(111516), \reports\HMISTU855\Panels\_fxtemp_Panel248.emf(105756), \reports\HMISTU855\Panels\_fxtemp_Panel249.emf(106476), \reports\HMISTU855\Panels\_fxtemp_Panel250.emf(108996), \reports\HMISTU855\Panels\_fxtemp_Panel251.emf(222788), \reports\HMISTU855\Panels\_fxtemp_Panel252.emf(238860), \reports\HMISTU855\Panels\_fxtemp_Panel253.emf(497516), \reports\HMISTU855\Panels\_fxtemp_Panel256.emf(221236), \reports\HMISTU855\Panels\_fxtemp_Panel258.emf(247956), \reports\HMISTU855\Panels\_fxtemp_Panel259.emf(470812), \reports\HMISTU855\Panels\_fxtemp_Panel262.emf(220912), \reports\HMISTU855\Panels\_fxtemp_Panel340.emf(194596), \reports\HMISTU855\Panels\_fxtemp_Panel350.emf(289616), \reports\HMISTU855\Panels\_fxtemp_Panel533.emf(358776), \reports\HMISTU855\Panels\_fxtemp_Panel549.emf(393128), \reports\HMISTU855\Panels\_fxtemp_Panel588.emf(230664), \reports\HMISTU855\Variables\index.html(156182)
+[00:28:16.373] OK   Exit (144 ms) -> <null>
+[00:28:16.494] done

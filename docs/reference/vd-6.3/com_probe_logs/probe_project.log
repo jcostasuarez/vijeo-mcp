@@ -1,0 +1,26 @@
+[00:24:47.985] OK   CreateObject(VijeoFrame.VijeoDesigner2) (202 ms) -> <ComObject>
+[00:24:50.817] IsAvailable=1 after 2.7s
+[00:24:50.833] frame: pid=2776 title='Vijeo-Frame' visible=True
+[00:24:50.924] OK   GetLastErrorMessage (90 ms) -> <null>
+[00:24:51.384] OK   NewProject('ProbeProj','Target1','Model_HMISTU855') (455 ms) -> <ComObject>
+[00:24:51.492] OK   GetLastErrorMessage (31 ms) -> <null>
+[00:24:52.480] OK   Project.Name (954 ms) -> [String] ProbeProj
+[00:24:52.560] OK   Project.IsDirty (73 ms) -> [Int32] 0
+[00:24:52.633] OK   Project.GetTargetNames (initial) (71 ms) -> <null>
+[00:24:52.823] OK   NewTarget('T_Model_HMISTU855','Model_HMISTU855') (187 ms) -> <null>
+[00:24:52.875] OK     Project.GetLastErrorMessage (49 ms) -> <null>
+[00:24:53.009] OK   NewTarget('T_HMISTU855','HMISTU855') (144 ms) -> <null>
+[00:24:53.071] OK     Project.GetLastErrorMessage (47 ms) -> <null>
+[00:24:53.211] OK   NewTarget('T_Target_HMISTU','Target_HMISTU') (152 ms) -> <null>
+[00:24:53.279] OK     Project.GetLastErrorMessage (52 ms) -> <null>
+[00:24:53.403] OK   NewTarget('T_HMIGTO5310','HMIGTO5310') (130 ms) -> <null>
+[00:24:53.444] OK     Project.GetLastErrorMessage (31 ms) -> <null>
+[00:24:53.581] OK   NewTarget('T_bogus_model','bogus_model') (134 ms) -> <null>
+[00:24:53.613] OK     Project.GetLastErrorMessage (31 ms) -> <null>
+[00:24:53.660] OK   Project.GetTargetNames (33 ms) -> <null>
+[00:24:53.797] OK   Project.Save(%TEMP%\scratch\vjd_work\ProbeProj.vdz) (132 ms) -> <null>
+[00:24:53.844] OK   Project.GetLastErrorMessage (45 ms) -> <null>
+[00:24:53.860] saved files: ProbeProj.vdz(1036)
+[00:24:53.980] OK   Project.Close (114 ms) -> <null>
+[00:24:54.061] OK   Exit (80 ms) -> <null>
+[00:24:54.151] done

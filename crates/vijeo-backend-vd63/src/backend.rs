@@ -865,6 +865,24 @@ fn clip_error(e: String) -> VijeoError {
     VijeoError::Internal(format!("no se entendió el contenido del portapapeles de Vijeo: {e}"))
 }
 
+/// Comprueba que existen `vars` entre las variables `known` del target (del XML). Las del sistema (`_CurPanelID`…)
+/// no salen en el XML y los índices de matriz (`Var[3]`) no se comprueban.
+fn check_variables(known: &[String], vars: &[String], target: &str) -> VijeoResult<()> {
+    let exists = |v: &str| known.iter().any(|k| *k == v.split('[').next().unwrap_or(v));
+    let missing: Vec<String> = vars
+        .iter()
+        .filter(|v| !v.starts_with('_') && !exists(v))
+        .map(|v| match known.iter().find(|k| k.eq_ignore_ascii_case(v)) {
+            Some(k) => format!("{v} (¿{k}?)"),
+            None => v.to_string(),
+        })
+        .collect();
+    if !missing.is_empty() {
+        return Err(VijeoError::invalid("variables", format!("no existen en «{target}»: {} (variable_list las lista)", missing.join(", "))));
+    }
+    Ok(())
+}
+
 fn read_clip(raw: Option<Vec<u8>>) -> VijeoResult<Option<objects::Clip>> {
     raw.map(|b| objects::Clip::from_bytes(&b).map_err(clip_error)).transpose()
 }
@@ -893,22 +911,8 @@ impl Vd63Backend {
     /// `need_panels`. Sin nada que comprobar no exporta el XML.
     fn object_context(&self, p: ProjectId, target: &str, vars: &[String], need_panels: bool) -> VijeoResult<Vec<vxml::PanelId>> {
         // Las variables del sistema (`_CurPanelID`…) no salen en el XML.
-        let vars: Vec<&String> = vars.iter().filter(|v| !v.starts_with('_')).collect();
-        if !vars.is_empty() {
-            let known = self.from_vxml(p, Some(target), vxml::variable_names)?;
-            // Los índices de matriz (`Var[3]`) no se comprueban.
-            let exists = |v: &str| known.iter().any(|k| *k == v.split('[').next().unwrap_or(v));
-            let missing: Vec<String> = vars
-                .iter()
-                .filter(|v| !exists(v))
-                .map(|v| match known.iter().find(|k| k.eq_ignore_ascii_case(v)) {
-                    Some(k) => format!("{v} (¿{k}?)"),
-                    None => v.to_string(),
-                })
-                .collect();
-            if !missing.is_empty() {
-                return Err(VijeoError::invalid("variables", format!("no existen en «{target}»: {} (variable_list las lista)", missing.join(", "))));
-            }
+        if vars.iter().any(|v| !v.starts_with('_')) {
+            check_variables(&self.from_vxml(p, Some(target), vxml::variable_names)?, vars, target)?;
         }
         if need_panels {
             self.from_vxml(p, Some(target), vxml::panel_ids)
@@ -962,12 +966,18 @@ impl PanelOps for Vd63Backend {
         });
         let ids = self.object_context(req.project, &t, &panel_ops::edit_variables(&req.operations), need_panels)?;
         let lookup = |p: &str| find_base_panel(&ids, p);
+        // Las propiedades de los smart objects sólo se sabe si son variables tras copiar el panel: se comprueban
+        // entonces contra las variables del XML, leídas antes de tocar la interfaz.
+        let known = if panel_ops::has_property_edits(&req.operations) { Some(self.from_vxml(req.project, Some(&t), vxml::variable_names)?) } else { None };
         let _one = CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner());
         let mut backup = vijeo_ui::clipboard::TextBackup::take();
         let mut touched = false;
         let r = inst.with_ui("editar los objetos del panel", |u| {
             // 1. Copiar y aplicar las operaciones sin tocar el panel: si alguna no vale, no cambia nada.
             let mut check = read_clip(u.copy_objects(&t, &path, false)?)?.ok_or_else(|| VijeoError::invalid("panel", "el panel no tiene objetos"))?;
+            if let Some(known) = &known {
+                check_variables(known, &panel_ops::edit_property_variables(&check, &req.operations)?, &t)?;
+            }
             let changes = panel_ops::apply(&mut check, &req.operations, &lookup)?;
             if req.dry_run {
                 return Ok((false, changes, panel_ops::to_objects(&check), Vec::new()));
@@ -1034,6 +1044,7 @@ impl PanelOps for Vd63Backend {
                 }
                 (None, Some(id), None, None) => {
                     let (d, clip) = toolchest::find(self.toolchest_libs()?, id).map_err(|e| VijeoError::invalid(&field, e))?;
+                    vars.extend(panel_ops::insert_property_variables(&clip.objects, &item.properties).map_err(|e| VijeoError::invalid(format!("{field}.properties"), e))?);
                     Source::Part(d.id, clip)
                 }
                 (None, None, Some(panel), Some(object)) => {
@@ -1044,6 +1055,9 @@ impl PanelOps for Vd63Backend {
             };
             if item.create.is_none() && (item.width.is_some() || item.height.is_some()) {
                 return Err(VijeoError::invalid(&field, "`width` y `height` sólo valen con `create`"));
+            }
+            if item.toolchest.is_none() && !item.properties.is_empty() {
+                return Err(VijeoError::invalid(&field, "`properties` sólo vale con `toolchest` (para otro smart object, panel_edit con set_properties)"));
             }
             sources.push(s);
         }
@@ -1134,8 +1148,11 @@ impl PanelOps for Vd63Backend {
         }
         backup.restore();
         let (changes, objects, warnings, mut notes) = r?;
-        if req.items.iter().any(|i| i.toolchest.is_some()) {
-            notes.push("las piezas de la Toolchest llegan sin configurar (variables vacías, como al arrastrarlas): project_build dice qué les falta".into());
+        if req.items.iter().any(|i| i.toolchest.is_some() && i.properties.is_empty()) {
+            notes.push("las piezas de la Toolchest sin `properties` llegan como al arrastrarlas (los smart objects, con las variables vacías): panel_objects muestra sus propiedades y panel_edit set_properties las cambia".into());
+        }
+        if req.items.iter().any(|i| !i.properties.is_empty()) {
+            notes.push("las variables de las propiedades se enlazan por nombre al pegar: project_build confirma que el smart object compila".into());
         }
         if req.items.iter().any(|i| i.create.is_some()) {
             notes.push("los objetos nuevos enlazan sus variables por nombre al pegarlos: project_build confirma que todo compila".into());
@@ -1200,6 +1217,20 @@ impl Vd63Backend {
     /// Navigator bajo un target (`depth` niveles), para diagnosticar `open_panel` en las pruebas en vivo.
     pub fn navigator_outline(&self, p: ProjectId, target: &str, depth: usize) -> VijeoResult<Vec<String>> {
         self.get(p)?.with_ui("Navigator", |u| u.navigator_outline(target, depth))
+    }
+
+    /// Contenido del portapapeles de objetos (compound file) tras Select All + Copy en el panel `panel`, sin
+    /// interpretar: diagnóstico para las pruebas en vivo y para ampliar el corpus. Guarda y devuelve el texto
+    /// del portapapeles como `panel_objects`.
+    #[doc(hidden)]
+    pub fn copy_panel_raw(&self, p: ProjectId, target: &str, panel: &str) -> VijeoResult<Option<Vec<u8>>> {
+        let (inst, t, found) = self.resolve_panel(p, target, panel, "panel")?;
+        let path = panel_path(&found);
+        let _one = CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner());
+        let mut backup = vijeo_ui::clipboard::TextBackup::take();
+        let raw = inst.with_ui("copiar los objetos del panel", |u| u.copy_objects(&t, &path, false));
+        backup.restore();
+        raw
     }
 
     /// Variables y grupos de escaneo del target `target` del proyecto `p` (o del único que tenga).

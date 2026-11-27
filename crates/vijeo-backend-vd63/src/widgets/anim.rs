@@ -130,6 +130,7 @@ impl Kind {
             Kind::Rotate => 4,
             Kind::Value => 7,
             Kind::Visibility => 4,
+            Kind::SmartObject => 1,
             _ => return None,
         })
     }
@@ -502,6 +503,28 @@ pub fn fmt_num(v: f64) -> String {
 // ---------------------------------------------------------------------------------------------------------------
 // Visibilidad (Visib.ocx, versión 4)
 // ---------------------------------------------------------------------------------------------------------------
+
+/// Animación SmartObject (SmartObj.ocx, v1): la llevan los grupos que son smart objects. `DoPropExchange`:
+/// extensión OLE, `PX_Bool SmartObject` y `PX_String SOItemID` (el id de la pieza, p. ej.
+/// `DATEDISP220804184201`; el XML lo exporta como `<SmartObject SOItem=…>`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SmartObjectAnim {
+    pub extent: Extent,
+    pub enabled: bool,
+    pub item_id: String,
+}
+
+impl SmartObjectAnim {
+    fn read(r: &mut Reader) -> R<Self> {
+        Ok(SmartObjectAnim { extent: Extent::read(r)?, enabled: rbool(r)?, item_id: r.cstring()? })
+    }
+
+    fn write(&self, w: &mut Writer) {
+        self.extent.write(w);
+        wbool(w, self.enabled);
+        w.cstring(&self.item_id);
+    }
+}
 
 /// `VisibilityAnimation`. Sin campo de invertir: se invierte con la expresión (`!X`, `X == 0`).
 #[derive(Debug, Clone, PartialEq)]
@@ -1403,6 +1426,7 @@ pub enum Animation {
     Rotate(Rotate),
     Value(Value),
     Visibility(Visibility),
+    SmartObject(SmartObjectAnim),
     Raw { guid: Guid, data: Vec<u8> },
 }
 
@@ -1416,6 +1440,7 @@ impl Animation {
             Animation::Rotate(_) => Kind::Rotate,
             Animation::Value(_) => Kind::Value,
             Animation::Visibility(_) => Kind::Visibility,
+            Animation::SmartObject(_) => Kind::SmartObject,
             Animation::Raw { guid, .. } => return Kind::from_guid(guid),
         })
     }
@@ -1445,6 +1470,7 @@ impl Animation {
             Animation::Rotate(a) => a.write(&mut w),
             Animation::Value(a) => a.write(&mut w),
             Animation::Visibility(a) => a.write(&mut w),
+            Animation::SmartObject(a) => a.write(&mut w),
             Animation::Raw { data, .. } => w.bytes(data),
         }
         w.o
@@ -1472,6 +1498,7 @@ impl Animation {
             Kind::Rotate => Animation::Rotate(Rotate::read(&mut r)?),
             Kind::Value => Animation::Value(Value::read(&mut r)?),
             Kind::Visibility => Animation::Visibility(Visibility::read(&mut r)?),
+            Kind::SmartObject => Animation::SmartObject(SmartObjectAnim::read(&mut r)?),
             _ => unreachable!(),
         };
         if r.left() != 0 {

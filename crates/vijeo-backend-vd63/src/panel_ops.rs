@@ -1,10 +1,91 @@
 //! Operaciones de panel_objects, panel_edit y panel_insert sobre los objetos ya leídos ([`Clip`]),
 //! sin Vijeo. El backend copia, corta y pega con la interfaz; aquí se decide qué pegar.
 
-use vijeo_core::{AnimationSpec, NewObject, PanelEditOp, PanelInsertItem, PanelObject, VijeoError, VijeoResult};
+use std::collections::BTreeMap;
+
+use vijeo_core::{AnimationSpec, NewObject, PanelEditOp, PanelInsertItem, PanelObject, SmartProperty, VijeoError, VijeoResult};
 
 use crate::objects::{Clip, Node};
 use crate::widgets::build::{self, PanelLookup};
+use crate::widgets::smartobj::{self, PropInput};
+
+/// Cola leída, entradas de `set_props` y variables que usan.
+type PropertyInputs = (smartobj::Tail, Vec<(String, PropInput)>, Vec<String>);
+
+/// Entradas de `set_props` para las propiedades pedidas, según el tipo de cada una en el smart object `n`, y
+/// las variables que usan (para comprobar que existen).
+fn property_inputs(n: &Node, props: &BTreeMap<String, String>) -> Result<PropertyInputs, String> {
+    let t = match smartobj::read(n) {
+        None => return Err(format!("«{}» no es un smart object: no tiene propiedades", n.name())),
+        Some(r) => r.map_err(|e| format!("no se entendieron las propiedades de «{}»: {e}", n.name()))?,
+    };
+    let (mut inputs, mut vars) = (Vec::new(), Vec::new());
+    for (name, value) in props {
+        let ids: Vec<&str> = t.props.iter().map(|p| p.id.as_str()).collect();
+        let p = t.props.iter().find(|p| p.id.eq_ignore_ascii_case(name)).ok_or_else(|| format!("«{}» no tiene la propiedad «{name}» (tiene: {})", n.name(), ids.join(", ")))?;
+        let input = match &p.value {
+            smartobj::PropValue::Tag { .. } => {
+                let v = value.trim();
+                if !v.is_empty() {
+                    vars.push(v.to_owned());
+                }
+                PropInput::Variable(v.to_owned())
+            }
+            smartobj::PropValue::Color(_) => PropInput::Color(value.clone()),
+            _ => PropInput::Combo(value.clone()),
+        };
+        inputs.push((p.id.clone(), input));
+    }
+    Ok((t, inputs, vars))
+}
+
+/// Cambia las propiedades `props` del smart object `n`. Devuelve una línea por cambio.
+pub fn set_properties(n: &mut Node, props: &BTreeMap<String, String>) -> Result<Vec<String>, String> {
+    if props.is_empty() {
+        return Err("no hay ninguna propiedad".into());
+    }
+    let (mut t, inputs, _) = property_inputs(n, props)?;
+    let done = smartobj::set_props(&mut t, &inputs)?;
+    smartobj::write(n, &t)?;
+    Ok(done)
+}
+
+/// El único smart object de nivel superior de una pieza (al que van las `properties` de panel_insert).
+fn smart_target(nodes: &[Node]) -> Result<usize, String> {
+    let idx: Vec<usize> = nodes.iter().enumerate().filter(|(_, n)| n.kind() == "SmartObject").map(|(i, _)| i).collect();
+    match idx.len() {
+        1 => Ok(idx[0]),
+        0 => Err("la pieza no es un smart object: `properties` no vale".into()),
+        n => Err(format!("la pieza tiene {n} smart objects: `properties` sólo vale con uno")),
+    }
+}
+
+/// Variables de las `properties` de un elemento de panel_insert sobre los objetos de su pieza.
+pub fn insert_property_variables(nodes: &[Node], props: &BTreeMap<String, String>) -> Result<Vec<String>, String> {
+    if props.is_empty() {
+        return Ok(Vec::new());
+    }
+    let i = smart_target(nodes)?;
+    Ok(property_inputs(&nodes[i], props)?.2)
+}
+
+/// Variables de las operaciones `set_properties` de panel_edit, sobre el panel ya copiado.
+pub fn edit_property_variables(clip: &Clip, ops: &[PanelEditOp]) -> VijeoResult<Vec<String>> {
+    let mut v = Vec::new();
+    for (i, op) in ops.iter().enumerate() {
+        if let PanelEditOp::SetProperties { object, properties } = op {
+            // Un objeto que aún no existe (lo crea o renombra una operación anterior) se comprueba en `apply`.
+            let Ok(p) = clip.resolve(object) else { continue };
+            v.extend(property_inputs(clip.node(&p), properties).map_err(|e| bad(&format!("operations[{i}]"), e))?.2);
+        }
+    }
+    Ok(v)
+}
+
+/// ¿Alguna operación cambia propiedades de smart objects?
+pub fn has_property_edits(ops: &[PanelEditOp]) -> bool {
+    ops.iter().any(|op| matches!(op, PanelEditOp::SetProperties { .. }))
+}
 
 /// Máximo de textos por objeto en panel_objects (las imágenes y los smart objects tienen muchos).
 const MAX_STRINGS: usize = 40;
@@ -31,11 +112,35 @@ fn classify(strings: Vec<String>) -> (Vec<String>, Vec<String>) {
     (texts, vars)
 }
 
+/// Propiedades de un smart object para panel_objects.
+fn smart_properties(t: &smartobj::Tail) -> Vec<SmartProperty> {
+    smartobj::describe(t)
+        .into_iter()
+        .map(|(name, kind, label, value, options)| SmartProperty { label: label.filter(|l| *l != name), name, kind, value, options })
+        .collect()
+}
+
 fn to_object(n: &Node, prefix: &str) -> PanelObject {
     let path = if prefix.is_empty() { n.name() } else { format!("{prefix}/{}", n.name()) };
     let r = n.rect();
-    let (strings, variables) = classify(n.strings());
+    // En los smart objects, las cadenas de la cola son el código Java de la pieza: se muestran sus propiedades.
+    let (strings, variables, smart_object, properties) = match smartobj::read(n) {
+        Some(Ok(t)) => {
+            let vars = t.props.iter().filter_map(|p| p.variable()).collect();
+            (Vec::new(), vars, smartobj::item_id(n), smart_properties(&t))
+        }
+        Some(Err(e)) => {
+            tracing::warn!(object = %path, "propiedades del smart object no leídas: {e}");
+            (Vec::new(), Vec::new(), smartobj::item_id(n), Vec::new())
+        }
+        None => {
+            let (s, v) = classify(n.strings());
+            (s, v, None, Vec::new())
+        }
+    };
     PanelObject {
+        smart_object,
+        properties,
         children: n.children().iter().map(|(_, c)| to_object(c, &path)).collect(),
         path,
         name: n.name(),
@@ -171,6 +276,11 @@ pub fn apply(clip: &mut Clip, ops: &[PanelEditOp], panels: PanelLookup) -> Vijeo
                 build::set_colors(clip.node_mut(&p), &c).map_err(err)?;
                 format!("«{object}»: colores cambiados")
             }
+            PanelEditOp::SetProperties { object, properties } => {
+                let p = resolve(clip, object)?;
+                let done = set_properties(clip.node_mut(&p), properties).map_err(err)?;
+                format!("«{object}»: {}", done.join(", "))
+            }
         };
         changes.push(done);
     }
@@ -204,6 +314,10 @@ pub fn prepare_insert(mut nodes: Vec<Node>, tags: Vec<u8>, item: &PanelInsertIte
         if n == 0 {
             return Err(err(format!("«{}» no aparece en el objeto", r.old)));
         }
+    }
+    if !item.properties.is_empty() {
+        let i = smart_target(&nodes).map_err(err)?;
+        set_properties(&mut nodes[i], &item.properties).map_err(err)?;
     }
     animate_insert(&mut nodes, item, item.visibility.as_deref(), field)?;
     let mut clip = Clip { anchor: (item.x, item.y), objects: nodes, tags };
@@ -375,6 +489,49 @@ mod tests {
         // Un Text suelto y un grupo con un Rectangle y un Text, como en objects::tests.
         let od = crate::objects::tests_support::sample();
         Clip::parse(&od, Vec::new()).unwrap()
+    }
+
+    /// El grupo del ejemplo convertido en smart object (cola y animación sintéticas).
+    fn smart_clip() -> Clip {
+        use crate::widgets::anim::{self, Animation, Extent, SmartObjectAnim};
+        let mut c = clip();
+        let g = &mut c.objects[0];
+        smartobj::write(g, &smartobj::tests::sample(9)).unwrap();
+        let a = Animation::SmartObject(SmartObjectAnim { extent: Extent::DEFAULT, enabled: true, item_id: "PRUEBA01".into() });
+        g.set_extension(&anim::write_ext(&[a]).unwrap()).unwrap();
+        Clip::parse(&c.stream(), Vec::new()).unwrap()
+    }
+
+    #[test]
+    fn smart_object_properties() {
+        let mut c = smart_clip();
+        let objs = to_objects(&c);
+        let g = &objs[0];
+        assert_eq!((g.kind.as_str(), g.smart_object.as_deref()), ("SmartObject", Some("PRUEBA01")));
+        assert!(g.strings.is_empty(), "sin el código Java: {:?}", g.strings);
+        let names: Vec<(&str, &str)> = g.properties.iter().map(|p| (p.name.as_str(), p.kind.as_str())).collect();
+        assert_eq!(names, [("DayVariable", "variable"), ("Format", "combo"), ("Color", "color"), ("Parent", "parent")]);
+        let props: BTreeMap<String, String> = [("DayVariable", "Carpeta.iDia"), ("Format", "yy/mm/dd"), ("Color", "00FF00")].into_iter().map(|(k, v)| (k.into(), v.into())).collect();
+        let ops = vec![PanelEditOp::SetProperties { object: "Grupo01".into(), properties: props.clone() }];
+        assert_eq!(edit_property_variables(&c, &ops).unwrap(), ["Carpeta.iDia"]);
+        let ch = apply(&mut c, &ops, &no_panels).unwrap();
+        assert_eq!(ch, ["«Grupo01»: Color = 00FF00, DayVariable = Carpeta.iDia, Format = 4"]);
+        let g = &to_objects(&Clip::parse(&c.stream(), Vec::new()).unwrap())[0];
+        assert_eq!(g.variables, ["Carpeta.iDia"]);
+        assert_eq!(g.properties[1].value, "4");
+        // Errores: no es un smart object, propiedad que no existe, tipo equivocado.
+        let bad_ops = |o: &str, k: &str, v: &str| vec![PanelEditOp::SetProperties { object: o.into(), properties: [(k.to_string(), v.to_string())].into() }];
+        assert!(apply(&mut c, &bad_ops("Suelto", "X", "1"), &no_panels).unwrap_err().to_string().contains("no es un smart object"));
+        assert!(apply(&mut c, &bad_ops("Grupo01", "Nada", "1"), &no_panels).unwrap_err().to_string().contains("no tiene la propiedad"));
+        assert!(apply(&mut c, &bad_ops("Grupo01", "Color", "rojo"), &no_panels).is_err());
+        // panel_insert: `properties` van al smart object de la pieza; las variables se sacan antes de pegar.
+        let nodes = smart_clip().objects;
+        assert_eq!(insert_property_variables(&nodes[..1], &props).unwrap(), ["Carpeta.iDia"]);
+        assert!(insert_property_variables(&nodes[1..], &props).unwrap_err().contains("no es un smart object"));
+        let item: PanelInsertItem = serde_json::from_value(serde_json::json!({"toolchest": "X\\Y", "x": 50, "y": 60, "properties": {"DayVariable": "Carpeta.iMes"}})).unwrap();
+        let ins = prepare_insert(nodes[..1].to_vec(), Vec::new(), &item, "items[0]").unwrap();
+        assert_eq!(to_objects(&ins)[0].variables, ["Carpeta.iMes"]);
+        assert_eq!(ins.objects[0].rect()[..2], [50, 60]);
     }
 
     #[test]

@@ -763,8 +763,32 @@ pub struct PanelObject {
     /// Variables a las que se refiere (nombre completo con carpetas).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub variables: Vec<String>,
+    /// Smart object (pieza «inteligente» de la Toolchest: fecha, hora, login…): id de la pieza (`SOItem` del XML).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub smart_object: Option<String>,
+    /// Propiedades del smart object (las que se cambian con `set_properties` de panel_edit).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub properties: Vec<SmartProperty>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<PanelObject>,
+}
+
+/// Propiedad de un smart object.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SmartProperty {
+    /// Id de la propiedad (el `Property ID` del XML), el que se usa en `properties`.
+    pub name: String,
+    /// `variable`, `color`, `combo`, `bool`, `int`, `double`, `char`, `string`, `text`, `font`… Sólo se cambian
+    /// variables, colores, combos, números, booleanos, caracteres y cadenas.
+    pub kind: String,
+    /// Nombre visible en el editor, si es distinto del id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Valor: la variable (vacío si no tiene), el color `RRGGBB`, el valor del combo…
+    pub value: String,
+    /// Combos: opciones `valor «etiqueta»` (se indica el valor o la etiqueta).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -839,6 +863,10 @@ pub enum PanelEditOp {
         #[serde(default)]
         off: Option<String>,
     },
+    /// Cambia propiedades de un smart object ({id: valor}, ids y opciones en panel_objects): variables con su
+    /// ruta (`Carpeta.Var`, vacía para quitarla; tienen que existir), colores `RRGGBB`, combos por valor o
+    /// etiqueta, números, booleanos (`true`/`false`), caracteres y cadenas.
+    SetProperties { object: String, properties: std::collections::BTreeMap<String, String> },
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -1243,6 +1271,10 @@ pub struct PanelInsertItem {
     /// Sustituciones en sus cadenas (como `replace` de panel_edit), p.ej. para cambiar la variable de un Switch.
     #[serde(default)]
     pub replace: Vec<TextReplace>,
+    /// Con `toolchest`, si la pieza es un smart object: sus propiedades {id: valor}, como `set_properties` de
+    /// panel_edit (sin ellas llega con las variables vacías y project_build da el error 4336).
+    #[serde(default)]
+    pub properties: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]

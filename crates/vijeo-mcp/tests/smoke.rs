@@ -192,6 +192,12 @@ fn smoke_list_and_catalog() {
     assert!(err && msg.as_str().unwrap().contains("[invalid_argument]"), "{msg}");
     let (err, msg) = c.call("panel_create", json!({"project": 99, "target": "HMI1"}));
     assert!(err && msg.as_str().unwrap().contains("[project_not_found]"), "{msg}");
+    let (err, msg) = c.call("panel_create", json!({"project": 99, "target": "HMI1", "kind": "popup", "name": "Avisos"}));
+    assert!(err && msg.as_str().unwrap().contains("[project_not_found]"), "{msg}");
+    let (err, msg) = c.call("panel_create", json!({"project": 99, "target": "HMI1", "kind": "popup", "name": "Mal nombre"}));
+    assert!(err && msg.as_str().unwrap().contains("[invalid_argument]"), "{msg}");
+    let (err, _) = c.call("panel_create", json!({"project": 99, "target": "HMI1", "kind": "master"}));
+    assert!(err, "kind desconocido");
     assert!(names.contains(&"equipment_add"));
     for args in [
         json!({"project": 99, "target": "HMI1", "driver": "Modbus TCP", "name": "PLC 1"}),

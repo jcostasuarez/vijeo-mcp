@@ -678,18 +678,23 @@ impl UiProject {
     /// Vijeo lo crea al momento, sin diálogo, como `<n>: Panel<n>` (n = el siguiente PanelID libre) y lo abre en el
     /// editor (verificado en vivo). Con `name`, se renombra editando su etiqueta; si Vijeo no acepta el nombre, el
     /// panel recién creado se borra y se devuelve el error con su texto. Devuelve (PanelID, nombre que queda).
-    pub fn new_panel(&mut self, target: &str, name: Option<&str>) -> VijeoResult<(u32, String)> {
+    ///
+    /// Con `popup`, una ventana emergente: «Insert» (`0xC066`, New Popup Window) con «Popup Windows» seleccionado crea
+    /// igual, sin diálogo, `<n>: Window<n>` (n = WindowID) con su panel `<10000+n>: Panel<…>` dentro (verificado en vivo,
+    /// ejemplo Modbus: `2: Window1` con `10002: Panel2`); se renombra la ventana y se devuelve (WindowID, nombre).
+    pub fn new_panel(&mut self, target: &str, name: Option<&str>, popup: bool) -> VijeoResult<(u32, String)> {
         let tree = self.tree()?;
         let titem = self.target_item(target)?;
-        let bp = self.base_panels_item(&tree, titem).ok_or_else(|| VijeoError::Internal(format!("no se encontró el nodo de paneles base de «{target}» en el Navigator")))?;
+        let group = if popup { POPUP_WINDOWS_NODE } else { BASE_PANELS_NODE[0] };
+        let bp = self.group_item(&tree, titem, group).ok_or_else(|| VijeoError::Internal(format!("no se encontró «{group}» de «{target}» en el Navigator")))?;
         tree.expand(bp);
         let before: Vec<TreeItem> = tree.children(bp);
         if !tree.focus(bp) {
-            return Err(VijeoError::Internal(format!("no se pudo seleccionar «{target} › Base Panels» en el Navigator")));
+            return Err(VijeoError::Internal(format!("no se pudo seleccionar «{target} › {group}» en el Navigator")));
         }
         std::thread::sleep(Duration::from_millis(300));
         let built = self.built;
-        self.sync_command("crear el panel", CMD_NEW_PANEL)?;
+        self.sync_command("crear el panel", if popup { CMD_INSERT } else { CMD_NEW_PANEL })?;
         let (item, label) = self
             .wait_until("crear el panel", self.t.call, |p| {
                 let tree = p.tree().ok()?;

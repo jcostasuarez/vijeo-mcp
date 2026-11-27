@@ -140,7 +140,8 @@ pub trait TargetOps: Send + Sync {
     /// panel_list (`BP:\Carpeta\Panel`) o la ruta sin `BP:\`.
     fn open_panel(&self, p: ProjectId, target: &str, panel: &str) -> VijeoResult<PanelRef>;
     /// Crea un panel base vacío en el target (con `name`, o el `Panel<n>` que le dé Vijeo) y lo deja abierto.
-    fn create_panel(&self, p: ProjectId, target: &str, name: Option<&str>) -> VijeoResult<CreatedPanel>;
+    /// Con `kind` popup, una ventana emergente nueva (`Window<n>`, con su panel dentro).
+    fn create_panel(&self, p: ProjectId, target: &str, kind: PanelKind, name: Option<&str>) -> VijeoResult<CreatedPanel>;
     /// Añade un equipo de comunicación al target, en un driver que ya tiene o en uno nuevo.
     fn add_equipment(&self, req: &EquipmentAddRequest) -> VijeoResult<EquipmentAddResult>;
     /// Renombra un panel base o una ventana emergente. `panel`: ruta de panel_list (`BP:\Carpeta\Panel`), ruta sin

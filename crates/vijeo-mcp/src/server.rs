@@ -75,15 +75,16 @@ Necesitan SupportsXMLImportExport=1 en el registro de Vijeo.
 - project_export_xml escribe el XML completo del proyecto (.vxml, public.xsd: pantallas, objetos, animaciones, \
 acciones, variables, alarmas…) con sus imágenes. No hay herramienta para importarlo.
 - Pantallas (paneles base de un proyecto abierto), con el portapapeles de Vijeo como Copiar/Pegar: panel_objects \
-lista los objetos (ruta Grupo/Objeto, tipo, posición absoluta, textos y variables); panel_edit renombra, mueve, \
-redimensiona, cambia textos, sustituye variables (Vijeo las vuelve a enlazar por nombre), borra objetos y cambia \
-animaciones, acciones de botones y colores (dry_run para probar); panel_insert crea objetos desde cero (`create`: \
-botones con acciones, lámparas, displays numéricos y de texto, textos, rectángulos, elipses y líneas, con animaciones \
-de visibilidad, parpadeo, color, relleno y posición) o añade piezas de la Toolchest (toolchest_list, sin Vijeo) u \
-objetos copiados de otro panel. Las variables tienen que existir en el target (se comprueban en el XML). \
-Usan el portapapeles de Windows: el texto que tuviera se devuelve al terminar, el resto se pierde. Después: \
-project_build para comprobar (las piezas de la Toolchest llegan sin variables) y project_save. Como project_goto, \
-no funcionan tras un project_build en la misma instancia.
+lista los objetos (ruta Grupo/Objeto, tipo, posición absoluta, textos y variables; de los smart objects, sus \
+propiedades); panel_edit renombra, mueve, redimensiona, cambia textos, sustituye variables (Vijeo las vuelve a \
+enlazar por nombre), borra objetos y cambia animaciones, acciones de botones, colores y propiedades de smart objects \
+(dry_run para probar); panel_insert crea objetos desde cero (`create`: botones con acciones, lámparas, displays \
+numéricos y de texto, textos, rectángulos, elipses y líneas, con animaciones de visibilidad, parpadeo, color, relleno \
+y posición) o añade piezas de la Toolchest (toolchest_list, sin Vijeo; los smart objects —fecha, hora…— con sus \
+`properties`) u objetos copiados de otro panel. Las variables tienen que existir en el target (se comprueban en el \
+XML). Usan el portapapeles de Windows: el texto que tuviera se devuelve al terminar, el resto se pierde. Después: \
+project_build para comprobar (un smart object sin sus variables da el error 4336) y project_save. Como \
+project_goto, no funcionan tras un project_build en la misma instancia.
 - script_lint revisa los scripts del proyecto (o un texto con `script`, antes de pegarlo en Vijeo) contra sus \
 variables y la API de scripts: variables inexistentes o con otras mayúsculas, métodos, sintaxis. No compila: \
 project_build sigue siendo la prueba definitiva. project_goto abre un panel base en la ventana de Vijeo; \
@@ -809,7 +810,9 @@ impl VijeoServer {
 
     /// Objetos de un panel base del proyecto abierto (Select All + Copy en su editor): ruta para panel_edit
     /// (`Grupo/Objeto`), tipo, posición y tamaño absolutos en el panel, textos (etiquetas…) y variables, con los
-    /// objetos de cada grupo. No cambia el proyecto; usa el portapapeles de Windows y devuelve el texto que tenía.
+    /// objetos de cada grupo. Los smart objects (`SmartObject`: fecha, hora, login… de la Toolchest) traen el id de
+    /// la pieza y sus `properties` (id, tipo, valor y, en los combos, las opciones). No cambia el proyecto; usa el
+    /// portapapeles de Windows y devuelve el texto que tenía.
     #[tool(annotations(read_only_hint = true, open_world_hint = false))]
     async fn panel_objects(&self, Parameters(p): Parameters<GotoParams>) -> ToolResult<PanelObjectsResult> {
         self.blocking(move |b| ops(b.panels(), Capability::PanelObjects, b)?.objects(ProjectId(p.project), &p.target, &p.panel)).await
@@ -817,7 +820,8 @@ impl VijeoServer {
 
     /// Edita los objetos de un panel base: rename, move, move_to, resize, set_text (un texto entero), replace (dentro
     /// de todas las cadenas, también variables: Vijeo las vuelve a enlazar por nombre), delete, animate (visibilidad,
-    /// parpadeo, color, relleno, posición), remove_animations, set_actions (botones) y set_colors. Se comprueban antes
+    /// parpadeo, color, relleno, posición), remove_animations, set_actions (botones), set_colors y set_properties
+    /// (smart objects: variables, colores, combos, números; las variables tienen que existir). Se comprueban antes
     /// de tocar nada; luego se cortan todos los objetos, se editan y se pegan, y se comprueba el resultado (si el panel
     /// quedara vacío, se vuelve a pegar el original). Con dry_run sólo devuelve cómo quedaría. Luego project_save.
     #[tool(annotations(destructive_hint = true, idempotent_hint = false, open_world_hint = false))]
@@ -827,12 +831,13 @@ impl VijeoServer {
 
     /// Añade a un panel base objetos nuevos (`create`: switch, lamp, numeric_display, string_display, text, rectangle,
     /// ellipse, line; colores RRGGBB; variables con su ruta completa, que tienen que existir), piezas de la Toolchest
-    /// (`toolchest`: id de toolchest_list) u objetos copiados de otro panel base del mismo target (`from_panel` +
-    /// `object`), con su esquina superior izquierda en x, y; opcionalmente con otro nombre, `animations`, `visibility`
-    /// y (salvo con `create`) sustituciones de texto o variables. Sin `name`, los nuevos se llaman como en Vijeo
-    /// (`Switch01`…). Devuelve los objetos del panel después y avisa si Vijeo cambió algún
-    /// nombre (no admite repetidos) o posición. Luego project_build (las piezas de la Toolchest llegan sin variables) y
-    /// project_save.
+    /// (`toolchest`: id de toolchest_list; si es un smart object, `properties` {id: valor} con sus variables, colores
+    /// y opciones, como set_properties de panel_edit) u objetos copiados de otro panel base del mismo target
+    /// (`from_panel` + `object`), con su esquina superior izquierda en x, y; opcionalmente con otro nombre,
+    /// `animations`, `visibility` y (salvo con `create`) sustituciones de texto o variables. Sin `name`, los nuevos se
+    /// llaman como en Vijeo (`Switch01`…). Devuelve los objetos del panel después y avisa si Vijeo cambió algún
+    /// nombre (no admite repetidos) o posición. Luego project_build (un smart object sin sus variables da el error
+    /// 4336) y project_save.
     #[tool(annotations(destructive_hint = false, idempotent_hint = false, open_world_hint = false))]
     async fn panel_insert(&self, Parameters(p): Parameters<PanelInsertRequest>) -> ToolResult<PanelChangeResult> {
         self.blocking(move |b| ops(b.panels(), Capability::PanelObjects, b)?.insert(&p)).await

@@ -471,6 +471,166 @@ mod live {
         backend.shutdown().unwrap();
     }
 
+    /// Smart objects (decimocuarta tanda): inserta `DateTime\Date_Display_01` y `Time_Display_01` de la Toolchest con
+    /// sus propiedades en el panel Alarms del ejemplo Hardwired, lee las del ejemplo (panel DateAndTime), cambia
+    /// propiedades con panel_edit (dry_run y de verdad), exporta el XML para ver cómo lo entiende Vijeo, guarda y
+    /// compila la copia aparte: sin el error 4336 (el 4230 ya lo trae el ejemplo).
+    #[test]
+    fn live_smart_object_properties() {
+        use vijeo_core::{PanelEditRequest, PanelInsertRequest, PanelObject};
+        let Some(src) = sample() else { return };
+        fn find<'a>(objs: &'a [PanelObject], name: &str) -> Option<&'a PanelObject> {
+            objs.iter().find_map(|o| if o.name == name { Some(o) } else { find(&o.children, name) })
+        }
+        fn prop<'a>(o: &'a PanelObject, name: &str) -> &'a str {
+            o.properties.iter().find(|p| p.name == name).unwrap_or_else(|| panic!("{} sin {name}: {:?}", o.name, o.properties)).value.as_str()
+        }
+        let b = backend();
+        let clip_before = vijeo_ui::clipboard::get_text();
+        let info = b.projects().unwrap().open(&src).unwrap();
+        let (p, target) = (info.id, info.targets[0].name.clone());
+        let panels = b.panels().unwrap();
+        let d = "MyController.DateAndTime";
+
+        // Las del ejemplo, como las exporta Vijeo (corpus/xml: VariableType 1, DateFormat 2, variables iGetRTC*).
+        let objs = panels.objects(p, &target, "DateAndTime").unwrap();
+        let ex = find(&objs.objects, "Date_Display_3D_01").unwrap();
+        eprintln!("{}", serde_json::to_string_pretty(ex).unwrap());
+        assert_eq!((ex.kind.as_str(), ex.smart_object.as_deref()), ("SmartObject", Some("ISHEN190804115521")));
+        assert_eq!((prop(ex, "VariableType"), prop(ex, "DateFormat")), ("1", "2"));
+        assert_eq!(prop(ex, "DayVariable"), format!("{d}.iGetRTCDay"));
+        assert_eq!(prop(ex, "DateVariable"), "");
+        assert!(ex.strings.is_empty());
+
+        // Variables que no existen: se rechaza antes de tocar Vijeo.
+        let bad: PanelInsertRequest = serde_json::from_value(serde_json::json!({
+            "project": p.0, "target": target, "panel": "Alarms",
+            "items": [{"toolchest": r"DateTime\Date_Display_01", "x": 10, "y": 40, "properties": {"DayVariable": "NoExiste.iDia"}}]
+        }))
+        .unwrap();
+        assert!(panels.insert(&bad).unwrap_err().to_string().contains("NoExiste.iDia"));
+
+        let ins: PanelInsertRequest = serde_json::from_value(serde_json::json!({
+            "project": p.0, "target": target, "panel": "Alarms",
+            "items": [
+                {"toolchest": r"DateTime\Date_Display_01", "x": 10, "y": 40, "name": "McpFecha",
+                 "properties": {"VariableType": "Separate Variables", "DateFormat": "dd/mm/yyyy", "DayVariable": format!("{d}.iGetRTCDay"),
+                                "MonthVariable": format!("{d}.iGetRTCMonth"), "YearVariable": format!("{d}.iGetRTCYear"), "TextColor": "0000FF"}},
+                {"toolchest": r"DateTime\Time_Display_01", "x": 130, "y": 40, "name": "McpHora",
+                 "properties": {"VariableType": "1", "HourVariable": format!("{d}.iGetRTCHour"), "MinuteVariable": format!("{d}.iGetRTCMin"),
+                                "SecondVariable": format!("{d}.iGetRTCSec"), "BgColor": "FFFF00"}}
+            ]
+        }))
+        .unwrap();
+        let r = panels.insert(&ins).unwrap();
+        eprintln!("{:#?}\n{:?}\n{:?}", r.changes, r.warnings, r.notes);
+        let f = find(&r.objects, "McpFecha").expect("McpFecha");
+        assert_eq!((f.kind.as_str(), f.left, f.top), ("SmartObject", 10, 40));
+        assert_eq!((prop(f, "VariableType"), prop(f, "DateFormat"), prop(f, "TextColor")), ("1", "0", "0000FF"));
+        assert_eq!(prop(f, "YearVariable"), format!("{d}.iGetRTCYear"));
+        let h = find(&r.objects, "McpHora").expect("McpHora");
+        assert_eq!((prop(h, "SecondVariable"), prop(h, "BgColor")), (format!("{d}.iGetRTCSec").as_str(), "FFFF00"));
+
+        // panel_edit: dry_run no cambia nada; luego de verdad.
+        let ed = |dry_run: bool| -> PanelEditRequest {
+            serde_json::from_value(serde_json::json!({
+                "project": p.0, "target": target, "panel": "Alarms", "dry_run": dry_run,
+                "operations": [{"op": "set_properties", "object": "McpFecha",
+                                "properties": {"YearVariable": format!("{d}.iSetRTCYear"), "DateFormat": "4", "BgColor": "C0C0C0"}}]
+            }))
+            .unwrap()
+        };
+        let dry = panels.edit(&ed(true)).unwrap();
+        assert!(!dry.applied);
+        assert_eq!(prop(find(&dry.objects, "McpFecha").unwrap(), "YearVariable"), format!("{d}.iSetRTCYear"));
+        assert_eq!(prop(find(&panels.objects(p, &target, "Alarms").unwrap().objects, "McpFecha").unwrap(), "YearVariable"), format!("{d}.iGetRTCYear"));
+        let e = panels.edit(&ed(false)).unwrap();
+        eprintln!("{:?} {:?}", e.changes, e.warnings);
+        assert!(e.applied && e.warnings.is_empty(), "{:?}", e.warnings);
+        let f = find(&e.objects, "McpFecha").unwrap();
+        assert_eq!((prop(f, "YearVariable"), prop(f, "DateFormat"), prop(f, "BgColor")), (format!("{d}.iSetRTCYear").as_str(), "4", "C0C0C0"));
+        let wrong: PanelEditRequest = serde_json::from_value(serde_json::json!({
+            "project": p.0, "target": target, "panel": "Alarms",
+            "operations": [{"op": "set_properties", "object": "McpFecha", "properties": {"MonthVariable": "MyController.NoExiste"}}]
+        }))
+        .unwrap();
+        assert!(panels.edit(&wrong).unwrap_err().to_string().contains("MyController.NoExiste"));
+
+        // Cómo lo entiende Vijeo: su propio XML.
+        let dir = work_dir("smart");
+        let x = b.reports().unwrap().export_xml(p, &dir.join("xml"), true).unwrap();
+        let xml = std::fs::read_to_string(&x.path).unwrap();
+        for name in ["McpFecha", "McpHora"] {
+            let at = xml.find(&format!("Name=\"{name}\"")).unwrap_or_else(|| panic!("{name} no está en el XML"));
+            let end = xml[at..].find("</SmartObject>").map(|e| at + e).unwrap();
+            let so = &xml[at..end];
+            eprintln!("---- {name}\n{so}");
+            if name == "McpFecha" {
+                assert!(so.contains("SOItem=\"DATEDISP220804184201\""), "{so}");
+                assert!(so.contains(&format!("ID=\"YearVariable\" Type=\"Variable\" Expression=\"{d}.iSetRTCYear\"")), "{so}");
+                assert!(so.contains(&format!("ID=\"DayVariable\" Type=\"Variable\" Expression=\"{d}.iGetRTCDay\"")), "{so}");
+                assert!(so.contains("ID=\"DateFormat\" Type=\"Combo\" ComboIndex=\"4\""), "{so}");
+                assert!(so.contains("ID=\"BgColor\" Type=\"Color\" PlaceholderColor=\"C0C0C0\""), "{so}");
+            } else {
+                assert!(so.contains(&format!("ID=\"SecondVariable\" Type=\"Variable\" Expression=\"{d}.iGetRTCSec\"")), "{so}");
+            }
+        }
+
+        let vdz = dir.join("McpSmart.vdz");
+        b.projects().unwrap().save(p, Some(&vdz), true).unwrap();
+        b.projects().unwrap().close(p, false).unwrap();
+        assert_eq!(vijeo_ui::clipboard::get_text(), clip_before, "el texto del portapapeles vuelve a estar");
+        let built = b.build().unwrap().build_file(&vdz, None).unwrap();
+        eprintln!("{:?}", built.messages);
+        for m in built.messages.iter().filter(|m| m.severity == vijeo_core::MessageSeverity::Error) {
+            assert!(m.code == Some(4230), "error inesperado: {m:?}");
+        }
+        b.shutdown().unwrap();
+    }
+
+    /// Amplía el corpus de smart objects (no comprueba nada): con `VIJEO_MCP_DUMP=<carpeta>` copia el panel
+    /// DateAndTime de los ejemplos (smart objects configurados, versión 9) y un panel con piezas de la Toolchest
+    /// pegadas (versiones 4, 7 y 8 que Vijeo sube a la 9) y guarda los portapapeles como `.bin`.
+    #[test]
+    fn live_dump_smart_object_clips() {
+        use vijeo_core::{PanelInsertRequest, PanelOps, ProjectOps};
+        let Ok(out) = std::env::var("VIJEO_MCP_DUMP") else { return };
+        let out = PathBuf::from(out);
+        std::fs::create_dir_all(&out).unwrap();
+        let inst = installation().expect("Vijeo 6.3");
+        let cfg = BackendConfig { cache_dir: Some(std::env::temp_dir().join("vijeo-mcp-live").join("no-cache")), ..Default::default() };
+        let b = vijeo_backend_vd63::Vd63Backend::new(&inst, Support::Exact, &cfg).unwrap();
+        let examples = [("", "Compact_Hardwired_M221.vdz"), ("MB_", "Compact_Modbus SL_M221_Book.vdz"), ("DR_", "MaterialWork_Drill_HW_M221.vdz")];
+        for (prefix, file) in examples {
+            let src = std::path::Path::new(EXAMPLES).join(file);
+            if !src.is_file() {
+                continue;
+            }
+            let info = ProjectOps::open(&b, &src).unwrap();
+            let (p, target) = (info.id, info.targets[0].name.clone());
+            let raw = b.copy_panel_raw(p, &target, "DateAndTime").unwrap().expect("DateAndTime con objetos");
+            std::fs::write(out.join(format!("{prefix}DateAndTime.bin")), &raw).unwrap();
+            if prefix.is_empty() {
+                let parts = [
+                    r"DateTime\Date_Display_01",
+                    r"DateTime\Time_Display_01",
+                    r"DateTime\Date_Display_3D_01",
+                    r"TextDisplay\TextDisplay_01",
+                    r"Security\FixedNameLogin",
+                    r"Configuration\BrightnessH_01_01",
+                ];
+                let items: Vec<serde_json::Value> =
+                    parts.iter().enumerate().map(|(i, id)| serde_json::json!({"toolchest": id, "x": 5 + 105 * (i as i32 % 3), "y": 40 + 60 * (i as i32 / 3)})).collect();
+                let req: PanelInsertRequest = serde_json::from_value(serde_json::json!({"project": p.0, "target": target, "panel": "Alarms", "items": items})).unwrap();
+                let r = PanelOps::insert(&b, &req).unwrap();
+                eprintln!("{:?} {:?}", r.changes, r.warnings);
+                let raw = b.copy_panel_raw(p, &target, "Alarms").unwrap().unwrap();
+                std::fs::write(out.join("TC_smart.bin"), &raw).unwrap();
+            }
+            ProjectOps::close(&b, p, true).unwrap();
+        }
+    }
+
     /// Diagnóstico: qué diálogo abre Import Variables (0xC419) con el nodo Variables seleccionado.
     #[test]
     fn live_probe_import_variables_dialog() {
@@ -868,6 +1028,32 @@ fn real_toolchest_parts() {
     }
     assert!(failed.is_empty(), "{failed:?}");
     assert!(ok >= 800, "{ok}");
+    // Smart objects (grupos v4, v7 y v8): la cola y la animación SmartObject se leen y se reescriben igual.
+    use vijeo_backend_vd63::objects::Node;
+    use vijeo_backend_vd63::widgets::smartobj;
+    fn smart<'a>(n: &'a Node, out: &mut Vec<&'a Node>) {
+        if n.kind() == "SmartObject" {
+            out.push(n);
+        }
+        n.children().iter().for_each(|(_, c)| smart(c, out));
+    }
+    let (mut so, mut so_bad) = (0, Vec::new());
+    for (id, c) in &clips {
+        let mut nodes = Vec::new();
+        c.objects.iter().for_each(|n| smart(n, &mut nodes));
+        for n in nodes {
+            so += 1;
+            let Node::Group { tail, .. } = n else { unreachable!() };
+            match smartobj::read(n).unwrap() {
+                Ok(t) if t.write() == *tail && smartobj::item_id(n).is_some() => {}
+                Ok(_) => so_bad.push(format!("{id} {}: distinta o sin animación tipada", n.name())),
+                Err(e) => so_bad.push(format!("{id} {}: {e}", n.name())),
+            }
+        }
+    }
+    eprintln!("smart objects: {so}, con problemas: {}", so_bad.len());
+    assert!(so_bad.is_empty(), "{so_bad:#?}");
+    assert!(so >= 400, "{so}");
     let (d, c) = toolchest::find(&libs, r"DateTime\Date_Display_01").unwrap();
     assert_eq!((d.kinds[0].as_str(), d.width, d.height), ("SmartObject", 100, 20));
     assert_eq!(c.objects[0].children().len(), 2);

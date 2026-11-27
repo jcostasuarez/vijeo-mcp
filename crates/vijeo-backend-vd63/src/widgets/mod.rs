@@ -19,6 +19,7 @@ pub mod anim;
 pub mod display;
 pub mod lamp;
 pub mod shapes;
+pub mod smartobj;
 
 #[cfg(test)]
 mod corpus {
@@ -39,11 +40,52 @@ mod corpus {
         })
     }
 
+    fn tail_of(n: &Node) -> Option<&[u8]> {
+        match n {
+            Node::Group { tail, .. } => Some(tail),
+            Node::Leaf(_) => None,
+        }
+    }
+
     fn visit(n: &Node, file: &str, stats: &mut std::collections::BTreeMap<String, (usize, usize)>, bad: &mut Vec<String>) {
         for (_, c) in n.children() {
             visit(c, file, stats, bad);
         }
-        if n.is_group() {
+        if let Some(r) = super::smartobj::read(n) {
+            if let Ok(t) = &r {
+                // Cada variable configurada se reconstruye con `tag_expr` (sin ids, `$`, marcadores ni el nibble
+                // alto de las flags, que no se reproducen).
+                for p in &t.props {
+                    let (Some(v), super::smartobj::PropValue::Tag { expr, .. }) = (p.variable(), &p.value) else { continue };
+                    let e = stats.entry("SmartObject (variables reconstruidas)".into()).or_default();
+                    e.0 += 1;
+                    let mut want = super::smartobj::tag_expr(&v);
+                    want.raw = expr.raw.clone();
+                    want.placeholders = expr.placeholders.clone();
+                    want.flags = (expr.flags & 0xF0) | 6;
+                    if want == *expr {
+                        e.1 += 1;
+                    } else {
+                        bad.push(format!("{file} {}.{}: {expr:?} ≠ {want:?}", n.name(), p.id));
+                    }
+                }
+            }
+            let e = stats.entry("SmartObject (cola)".into()).or_default();
+            e.0 += 1;
+            match r {
+                Ok(t) if Some(&t.write()[..]) == tail_of(n) => e.1 += 1,
+                Ok(_) => bad.push(format!("{file} {}: cola distinta", n.name())),
+                Err(err) => bad.push(format!("{file} {}: cola: {err}", n.name())),
+            }
+            let e = stats.entry("SmartObject (animación tipada)".into()).or_default();
+            e.0 += 1;
+            if super::smartobj::item_id(n).is_some() {
+                e.1 += 1;
+            } else {
+                bad.push(format!("{file} {}: animación SmartObject sin tipar", n.name()));
+            }
+        }
+        if n.is_group() && n.kind() != "SmartObject" {
             return;
         }
         if let Some(ext) = n.extension() {

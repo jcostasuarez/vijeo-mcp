@@ -107,8 +107,11 @@ public class Validator : IObjectMethodValidate, IObjectMethodValidate2 {
   public HashSet<string> Folders = new HashSet<string>();
   // tipo (BOOL/INTEGER/REAL/STRING/BaseTag, LSys, LMath, "" = funciones globales) -> método -> firmas
   public Dictionary<string, Dictionary<string, List<string>>> Sigs = new Dictionary<string, Dictionary<string, List<string>>>();
-  static readonly Dictionary<string, string> Objects = new Dictionary<string, string> { { "Sys", "LSys" }, { "Math", "LMath" } };
+  static readonly Dictionary<string, string> Objects = new Dictionary<string, string> { { "Sys", "LSys" }, { "Math", "LMath" }, { "String", "LString" } };
 
+  // VIJEO_MCP_SCRIPT_LOG=<fichero>: anota cada consulta del motor (para depurar qué pregunta).
+  static readonly string LogPath = Environment.GetEnvironmentVariable("VIJEO_MCP_SCRIPT_LOG");
+  public static int L(int hr, string what) { if (!string.IsNullOrEmpty(LogPath)) System.IO.File.AppendAllText(LogPath, what + " -> " + hr + "\r\n"); return hr; }
   static void Str(IntPtr p, string s) { if (p != IntPtr.Zero) Marshal.WriteIntPtr(p, Marshal.StringToBSTR(s)); }
   static void Int(IntPtr p, int v) { if (p != IntPtr.Zero) Marshal.WriteInt32(p, v); }
   public void Add(string type, string method, string sig) {
@@ -124,19 +127,20 @@ public class Validator : IObjectMethodValidate, IObjectMethodValidate2 {
   }
 
   public int Initialize(IntPtr a, IntPtr b, IntPtr c, IntPtr d) { return 0; }
-  public int IsObject(string name, IntPtr type) { string t; bool ok = Objects.TryGetValue(name, out t); Str(type, ok ? t : ""); return ok ? 0 : 1; }
+  public int IsObject(string name, IntPtr type) { string t; bool ok = Objects.TryGetValue(name, out t); Str(type, ok ? t : ""); return L(ok ? 0 : 1, "IsObject(" + name + ")"); }
   public int IsTag(string name, IntPtr type, IntPtr indirect, IntPtr accessible, IntPtr system, IntPtr inFolder) {
     string t; Int(indirect, 0); Int(system, 0);
-    if (Tags.TryGetValue(name, out t)) { Str(type, t); Int(accessible, 1); Int(inFolder, name.IndexOf('.') > 0 ? 1 : 0); return 0; }
+    if (Tags.TryGetValue(name, out t)) { Str(type, t); Int(accessible, 1); Int(inFolder, name.IndexOf('.') > 0 ? 1 : 0); return L(0, "IsTag(" + name + ")=" + t); }
     Int(accessible, 0); Int(inFolder, 0);
     // Una instancia de estructura es una variable (BaseTag) aunque tenga miembros; el resto de prefijos son carpetas.
-    if (Folders.Contains(name)) { Str(type, "LFolder"); return 0; }
-    Str(type, ""); return 1;
+    if (Folders.Contains(name)) { Str(type, "LFolder"); return L(0, "IsTag(" + name + ")=LFolder"); }
+    Str(type, ""); return L(1, "IsTag(" + name + ")");
   }
-  public int GetObjectNames(string t, IntPtr names, IntPtr n) { Int(n, 0); if (names != IntPtr.Zero) Marshal.WriteIntPtr(names, IntPtr.Zero); return 1; }
+  public int GetObjectNames(string t, IntPtr names, IntPtr n) { Int(n, 0); if (names != IntPtr.Zero) Marshal.WriteIntPtr(names, IntPtr.Zero); return L(1, "GetObjectNames(" + t + ")"); }
   public int GetFuncSignature(string t, string m, IntPtr sigs, IntPtr n) {
     Dictionary<string, List<string>> mm; List<string> l;
-    if (!Sigs.TryGetValue(t ?? "", out mm) || !mm.TryGetValue(m, out l)) return 1;
+    if (!Sigs.TryGetValue(t ?? "", out mm) || !mm.TryGetValue(m, out l)) return L(1, "GetFuncSignature(" + t + ", " + m + ")");
+    L(0, "GetFuncSignature(" + t + ", " + m + ")=" + string.Join("|", l.ToArray()));
     if (sigs != IntPtr.Zero && n != IntPtr.Zero) {
       IntPtr a = Marshal.AllocCoTaskMem(IntPtr.Size * l.Count);
       for (int i = 0; i < l.Count; i++) Marshal.WriteIntPtr(a, i * IntPtr.Size, Marshal.StringToBSTR(l[i]));
@@ -146,9 +150,9 @@ public class Validator : IObjectMethodValidate, IObjectMethodValidate2 {
   }
   public int GetTypeFieldMethodNames(string t, IntPtr f, IntPtr m, IntPtr p, IntPtr nf, IntPtr nm, IntPtr np) {
     foreach (var q in new[] { f, m, p }) if (q != IntPtr.Zero) Marshal.WriteIntPtr(q, IntPtr.Zero);
-    Int(nf, 0); Int(nm, 0); Int(np, 0); return 1;
+    Int(nf, 0); Int(nm, 0); Int(np, 0); return L(1, "GetTypeFieldMethodNames(" + t + ")");
   }
-  public int IsField(string t, string f, IntPtr type) { Str(type, ""); return 1; }
+  public int IsField(string t, string f, IntPtr type) { Str(type, ""); return L(1, "IsField(" + t + ", " + f + ")"); }
   public int AddObjects(IntPtr a, IntPtr b, int n) { return 0; }
   public int AddTags(IntPtr a, IntPtr b, int n) { return 0; }
   public int AddMethods(IntPtr a, IntPtr b, int n) { return 0; }
@@ -158,17 +162,17 @@ public class Validator : IObjectMethodValidate, IObjectMethodValidate2 {
   public int RemoveObjects(IntPtr a, IntPtr b, int n) { return 0; }
   public int RemoveTags(IntPtr a, int n) { return 0; }
   public int RemoveAll() { return 0; }
-  public int IsSubclass(string a, string b) { return 1; }
+  public int IsSubclass(string a, string b) { return L(1, "IsSubclass(" + a + ", " + b + ")"); }
   public int GetTargetName(IntPtr name) { Str(name, "Target1"); return 0; }
   public int GetCGPanelName(IntPtr name) { Str(name, "Panel1"); return 0; }
   public int SetGlobalUpdateLock(int l) { return 0; }
-  public int GetTagType(string name, IntPtr t) { if (t != IntPtr.Zero) Marshal.WriteInt16(t, 0); return 1; }
+  public int GetTagType(string name, IntPtr t) { if (t != IntPtr.Zero) Marshal.WriteInt16(t, 0); return L(1, "GetTagType(" + name + ")"); }
   public int IsTagMethod(string m) {
-    foreach (var t in new[] { "LTag.BOOL", "LTag.INTEGER", "LTag.REAL", "LTag.STRING" }) { Dictionary<string, List<string>> mm; if (Sigs.TryGetValue(t, out mm) && mm.ContainsKey(m)) return 0; }
-    return 1;
+    foreach (var t in new[] { "LTag.BOOL", "LTag.INTEGER", "LTag.REAL", "LTag.STRING" }) { Dictionary<string, List<string>> mm; if (Sigs.TryGetValue(t, out mm) && mm.ContainsKey(m)) return L(0, "IsTagMethod(" + m + ")"); }
+    return L(1, "IsTagMethod(" + m + ")");
   }
   public int GetBuildTargetName(string a, IntPtr b) { Str(b, a); return 0; }
-  public int IsTagType(string t) { return 1; }
+  public int IsTagType(string t) { return L(1, "IsTagType(" + t + ")"); }
 }
 
 public static class Compiler {
@@ -185,6 +189,27 @@ public static class Compiler {
     "vibrationOn=()V", "vibrationOff=()V", "systemWindowShow=(Z)V", "beep=()V", "logout=()V", "flushAllDataLogging=()V",
     "getLastFieldRequested=()I", "getLastFieldUpdated=()I", "getInfoString=(I)LString", "getInfoInt=(I)I", "controllerStart=()V",
     "controllerStop=()V", "login=(LString,LString)V", "clearBiometricSwitch=()I", "getTemperature=()I" };
+  // String y StringBuffer de Java: la tabla interna de ScriptEngine sólo trae los nombres (con firma «()V»); las
+  // firmas son las de java.lang (C char). El motor pregunta GetFuncSignature("LString", método) para una local String
+  // y ("LStringBuffer", "StringBuffer") para el constructor.
+  static readonly string[] StringMethods = {
+    "String=()V", "String=(LString)V", "length=()I", "charAt=(I)C",
+    "indexOf=(I)I", "indexOf=(LString)I", "indexOf=(I,I)I", "indexOf=(LString,I)I",
+    "lastIndexOf=(I)I", "lastIndexOf=(LString)I", "lastIndexOf=(I,I)I", "lastIndexOf=(LString,I)I",
+    "substring=(I)LString", "substring=(I,I)LString", "equals=(LString)Z", "equalsIgnoreCase=(LString)Z",
+    "startsWith=(LString)Z", "startsWith=(LString,I)Z", "endsWith=(LString)Z", "compareTo=(LString)I",
+    "concat=(LString)LString", "replace=(C,C)LString", "toUpperCase=()LString", "toLowerCase=()LString", "trim=()LString",
+    "toString=()LString", "hashCode=()I", "intern=()LString",
+    "regionMatches=(I,LString,I,I)Z", "regionMatches=(Z,I,LString,I,I)Z",
+    "valueOf=(I)LString", "valueOf=(J)LString", "valueOf=(F)LString", "valueOf=(D)LString", "valueOf=(Z)LString", "valueOf=(C)LString" };
+  static readonly string[] StringBufferMethods = {
+    "StringBuffer=()V", "StringBuffer=(I)V", "StringBuffer=(LString)V",
+    "append=(LString)LStringBuffer", "append=(I)LStringBuffer", "append=(J)LStringBuffer", "append=(F)LStringBuffer",
+    "append=(D)LStringBuffer", "append=(Z)LStringBuffer", "append=(C)LStringBuffer",
+    "insert=(I,LString)LStringBuffer", "insert=(I,I)LStringBuffer", "insert=(I,J)LStringBuffer", "insert=(I,F)LStringBuffer",
+    "insert=(I,D)LStringBuffer", "insert=(I,Z)LStringBuffer", "insert=(I,C)LStringBuffer",
+    "length=()I", "capacity=()I", "ensureCapacity=(I)V", "setLength=(I)V", "setCharAt=(I,C)V", "charAt=(I)C",
+    "reverse=()LStringBuffer", "toString=()LString" };
 
   static void AddAll(Validator v, string type, string[] list) {
     foreach (var s in list) { int i = s.IndexOf('='); v.Add(type, s.Substring(0, i), s.Substring(i + 1)); }
@@ -219,6 +244,7 @@ public static class Compiler {
     foreach (var t in new[] { "LTag.BOOL", "LTag.INTEGER", "LTag.REAL", "LTag.STRING", "LBaseTag" }) AddAll(v, t, TagMethods);
     AddAll(v, "LTag.BOOL", IntTagMethods); AddAll(v, "LTag.INTEGER", IntTagMethods); AddAll(v, "LTag.REAL", FloatTagMethods);
     AddAll(v, "LSys", SysMethods);
+    AddAll(v, "LString", StringMethods); AddAll(v, "LStringBuffer", StringBufferMethods);
     AddMath(v, mathXml);
     var results = new List<object>();
     var engine = (IScriptValidate)Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("79575a22-58cd-4980-890b-803e6b29ccea")));
@@ -229,6 +255,7 @@ public static class Compiler {
     foreach (object o in (System.Collections.ArrayList)input["scripts"]) {
       // Vijeo compila la fuente con un salto de línea más al final (comprobado con el corpus).
       string src = ((string)o).Replace("\r\n", "\n").Replace("\n", "\r\n") + "\r\n";
+      Validator.L(0, "=== " + src.Replace("\r\n", "\\n"));
       var sink = new Sink(); int cookie; cp.Advise(sink, out cookie);
       int o1, b1, b2; IntPtr s1, compiled, s3, s4;
       int hr = engine.Validate(src, 0, v, out o1, out s1, out compiled, out s3, out s4, out b1, out b2, 0);

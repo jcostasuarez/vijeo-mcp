@@ -87,9 +87,11 @@ y posición) o añade piezas de la Toolchest (toolchest_list, sin Vijeo; los sma
 XML). Usan el portapapeles de Windows: el texto que tuviera se devuelve al terminar, el resto se pierde. Después: \
 project_build para comprobar (un smart object sin sus variables da el error 4336) y project_save. Como \
 project_goto, no funcionan tras un project_build en la misma instancia.
-- script_lint revisa los scripts del proyecto (o un texto con `script`, antes de pegarlo en Vijeo) contra sus \
-variables y la API de scripts: variables inexistentes o con otras mayúsculas, métodos, sintaxis. No compila: \
-project_build sigue siendo la prueba definitiva. project_goto abre un panel base en la ventana de Vijeo; \
+- script_lint revisa los scripts del proyecto (o un texto con `script`, antes de pegarlo en Vijeo) con el \
+compilador de scripts de Vijeo y reglas propias: sintaxis y tipos con línea y columna, variables inexistentes o con \
+otras mayúsculas, métodos. Un script que usa objetos que el MCP aún no describe al compilador (ventanas emergentes, \
+sonidos, recetas, campos de Sys…) sale con `compiles` ausente y `compiler_note`: ese sólo pasa las reglas propias. \
+project_build no compila las fuentes de los scripts de acción, así que no los valida. project_goto abre un panel base en la ventana de Vijeo; \
 tras un project_build en la misma instancia Vijeo deja de atender el Navigator: úsalo antes de compilar o \
 guarda, cierra y vuelve a abrir. Lo mismo vale para variables_import, que importa en un target abierto un CSV \
 de variables (de variables_generate_csv o de Export Variables) o directamente una lista de ariables (como en \
@@ -436,7 +438,9 @@ pub struct ScriptLintOut {
     pub scripts_checked: usize,
     pub errors: usize,
     pub warnings: usize,
-    /// Scripts con algún problema (o todos con `include_clean`).
+    /// Scripts que no se pudieron comprobar con el compilador de Vijeo (ver `compiler_note` de cada uno).
+    pub not_compiled: usize,
+    /// Scripts con algún problema o sin comprobar con el compilador (o todos con `include_clean`).
     pub scripts: Vec<ScriptLint>,
 }
 
@@ -764,8 +768,9 @@ impl VijeoServer {
         .await
     }
 
-    /// Revisa los scripts del proyecto (o el código de `script`) sin compilar: variables que no existen o con otras
-    /// mayúsculas, métodos que no son de la API, variables usadas sin getIntValue(), paréntesis y comillas sin cerrar…
+    /// Revisa los scripts del proyecto (o el código de `script`) con el compilador de scripts de Vijeo (ScriptEngine.dll)
+    /// y con reglas propias: errores de sintaxis y de tipos con línea y columna, variables que no existen o con otras
+    /// mayúsculas, métodos que no son de la API, variables usadas sin getIntValue()…
     #[tool(annotations(read_only_hint = true, open_world_hint = false))]
     async fn script_lint(&self, Parameters(p): Parameters<ScriptLintParams>) -> ToolResult<ScriptLintOut> {
         self.blocking(move |b| {
@@ -773,8 +778,9 @@ impl VijeoServer {
             let count = |s| all.iter().flat_map(|l| &l.issues).filter(|i| i.severity == s).count();
             let (errors, warnings) = (count(MessageSeverity::Error), count(MessageSeverity::Warning));
             let scripts_checked = all.len();
-            let scripts = all.into_iter().filter(|l| p.include_clean || !l.issues.is_empty()).collect();
-            Ok(ScriptLintOut { scripts_checked, errors, warnings, scripts })
+            let not_compiled = all.iter().filter(|l| l.compiles.is_none()).count();
+            let scripts = all.into_iter().filter(|l| p.include_clean || !l.issues.is_empty() || l.compiles.is_none()).collect();
+            Ok(ScriptLintOut { scripts_checked, errors, warnings, not_compiled, scripts })
         })
         .await
     }

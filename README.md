@@ -58,7 +58,7 @@ Qué modelos se pueden crear: la regla del catálogo supone la licencia estánda
 | `project_export_xml` | Export Project: escribe `<dir>\<proyecto>.vxml` (public.xsd) y la carpeta `<dir>\<proyecto>\` con las imágenes |
 | `variable_list`, `variable_lookup`, `project_cross_references` | Variables (nombre completo, tipo, origen, dirección, descripción), existencia de una variable y referencias cruzadas (dónde se usa cada una y cuáles no se usan), leídas del `.vxml` |
 | `panel_report`, `action_list` | Paneles con sus acciones de panel, y acciones globales (disparador, enclavamiento, script u operaciones), del `.vxml` |
-| `script_lint` | Revisa los scripts del proyecto (o un texto suelto) contra sus variables y la API de scripts: variables que no existen, mayúsculas, métodos, sintaxis. No compila |
+| `script_lint` | Revisa los scripts del proyecto (o un texto suelto) con el compilador de scripts de Vijeo (`ScriptEngine.dll`: sintaxis y tipos con línea y columna) y contra sus variables y la API de scripts: variables que no existen, mayúsculas, métodos. Los que usan objetos que el MCP aún no describe al compilador salen como «sin comprobar» |
 | `project_goto` | Abre un panel base en la ventana de Vijeo del proyecto (Navigator) |
 | `variables_import` | Variables › Import Variables en un target abierto: un CSV o una lista de variables (se genera el CSV). Las que ya existen se conservan salvo con `replace_existing`; el `.vdz` cambia con `project_save` |
 | `xml_validate` | Sin Vijeo: valida un `.vxml` contra el `public.xsd` de la instalación (con .NET `System.Xml`) |

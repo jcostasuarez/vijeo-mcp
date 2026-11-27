@@ -191,4 +191,95 @@ mod tests {
         assert!(r[2].compiled.is_none());
         assert_eq!((r[2].errors[0].code, r[2].errors[0].line, r[2].errors[0].column), (8020, 1, 9), "{:?}", r[2].errors);
     }
+
+    /// String/StringBuffer de Java con el compilador de Vijeo, y cómo los junta `lint::merge_compiler` con la revisión
+    /// propia: errores reales, scripts que no se pueden comprobar (objetos que el MCP aún no describe) y cascadas.
+    #[test]
+    fn strings_and_lint_merge() {
+        let frame = Path::new(r"C:\Program Files (x86)\Schneider Electric\Vijeo-Designer 6.3\Vijeo-Frame");
+        if !frame.join("ScriptEngine.dll").is_file() {
+            eprintln!("sin Vijeo 6.3: se omite");
+            return;
+        }
+        let syms: Vec<Symbol> = vec![("Var".into(), "INTEGER".into()), ("F.Speed".into(), "REAL".into()), ("S".into(), "STRING".into()), ("B".into(), "BOOL".into())];
+        let mut ctx = crate::lint::Context::default();
+        for (n, t) in [("Var", "INT"), ("F.Speed", "REAL"), ("S", "STRING"), ("B", "BOOL")] {
+            ctx.add_variable(n, t);
+        }
+        ctx.add_object("Popup1");
+        // (script, compila: Some(true) / Some(false) / None = no se comprueba, línea del primer error del compilador)
+        let cases: [(&str, Option<bool>, Option<u32>); 19] = [
+            ("String s = \"abc\";\nint n = s.length();\nVar.write(n);", Some(true), None),
+            ("String t = S.getStringValue();\nif (t.equals(\"a\")) { Var.write(1); }", Some(true), None),
+            ("StringBuffer sb = new StringBuffer();\nsb.append(\"x\");\nsb.append(3);\nS.write(sb.toString());", Some(true), None),
+            ("String s = \"abc\";\nif (s.charAt(0) == 'a') { Var.write(s.indexOf(\"b\")); }", Some(true), None),
+            ("String s = \"abc\";\nS.write(s.substring(1, 2).toUpperCase());", Some(true), None),
+            ("String s = \"abc\" + Var.getIntValue();\nS.write(s);", Some(true), None),
+            ("S.write(String.valueOf(3));", Some(true), None),
+            ("String s = new String(\"x\");\nS.write(s.trim());", Some(true), None),
+            ("StringBuffer sb = new StringBuffer(\"a\");\nsb.insert(0, \"b\");\nsb.setLength(1);\nS.write(sb.reverse().toString());", Some(true), None),
+            ("int[] a = new int[3];\na[0] = 1;\nVar.write(a[0]);", Some(true), None),
+            ("String s = \"a\";\nint n = s.substring(1);", Some(false), Some(2)),
+            ("Var.write(1)\nVar.write(2);", Some(false), Some(2)),
+            ("try { Var.write(1); } catch (Exception e) { }", Some(false), Some(1)),
+            // La revisión propia ya da el error (mejor explicado) en esa línea: el del compilador no se repite.
+            ("Var.write(Var + 1);", Some(false), None),
+            ("Popup1.show();", None, None),
+            ("int x = Sys.getInfoInt(Sys.INFO_CPU_LOAD);", None, None),
+            ("int n = Integer.parseInt(\"12\");\nVar.write(n);", None, None),
+            ("TextFile f = new TextFile(\"a\");", None, None),
+            ("Foo.write(1);", Some(false), None),
+        ];
+        let srcs: Vec<String> = cases.iter().map(|c| normalize(c.0)).collect();
+        let r = compile(frame, &syms, &srcs).unwrap();
+        for ((src, compiles, first_line), c) in cases.iter().zip(&r) {
+            let own = crate::lint::lint(src, &ctx);
+            let check = crate::lint::merge_compiler(&own, c, &ctx);
+            assert_eq!(check.compiles, *compiles, "{src}: {:?} / {:?}", c.errors, check.note);
+            assert_eq!(check.note.is_some(), compiles.is_none(), "{src}");
+            if let Some(l) = first_line {
+                let mine: Vec<_> = check.issues.iter().filter(|i| i.message.contains("compilador de Vijeo")).collect();
+                assert!(mine.first().is_some_and(|i| i.line == *l), "{src}: {mine:?} (propios {own:?})");
+                // Un error por línea: sin las cascadas.
+                let lines: std::collections::BTreeSet<u32> = mine.iter().map(|i| i.line).collect();
+                assert_eq!(lines.len(), mine.iter().filter(|i| i.severity == vijeo_core::MessageSeverity::Error).count(), "{src}: {mine:?}");
+            }
+        }
+        // «Foo» no existe: la revisión propia ya lo dice en la línea 1, así que el compilador no lo repite.
+        assert!(crate::lint::merge_compiler(&crate::lint::lint(cases[18].0, &ctx), &r[18], &ctx).issues.is_empty());
+    }
+
+    /// Compila los scripts de los .vxml de `VIJEO_MCP_XML_DIR` (por defecto, el corpus de docs) e imprime los que fallan.
+    #[test]
+    #[ignore]
+    fn explore_corpus() {
+        let frame = Path::new(r"C:\Program Files (x86)\Schneider Electric\Vijeo-Designer 6.3\Vijeo-Frame");
+        let dir = std::env::var_os("VIJEO_MCP_XML_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/reference/vd-6.3/corpus/xml"));
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("vxml") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&p).unwrap();
+            let doc = crate::vxml::parse(&text).unwrap();
+            for t in crate::vxml::select_targets(&doc, None).unwrap() {
+                let syms = crate::vxml::script_symbols(t);
+                let scripts = crate::vxml::scripts(t);
+                let srcs: Vec<String> = scripts.iter().map(|s| normalize(&s.2)).collect();
+                let r = compile(frame, &syms, &srcs).unwrap();
+                let ok = r.iter().filter(|c| c.compiled.is_some()).count();
+                println!("== {} / {}: {} scripts, {} ok", p.file_name().unwrap().to_string_lossy(), crate::vxml::target_name(t), srcs.len(), ok);
+                for (s, c) in scripts.iter().zip(&r) {
+                    if c.compiled.is_none() {
+                        println!("  {} [{:?}]: {}", s.0, s.1, describe(&c.errors));
+                        let l = c.errors.first().map(|m| m.line as usize).unwrap_or(1);
+                        println!("     > {}", s.2.lines().nth(l.saturating_sub(1)).unwrap_or("").trim());
+                    }
+                    if !c.warnings.is_empty() {
+                        println!("  W {}: {}", s.0, describe(&c.warnings));
+                    }
+                }
+            }
+        }
+    }
 }

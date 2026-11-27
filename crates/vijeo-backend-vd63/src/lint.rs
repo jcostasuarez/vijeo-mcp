@@ -425,6 +425,83 @@ fn check_float_literals(toks: &[Tok], out: &mut Out) {
     }
 }
 
+/// Clases y objetos del runtime que el compilador del MCP (`script.rs`) todavía no conoce: si un script los usa, sus
+/// errores no son fiables («Undeclared…» y errores en cascada, incluso «Syntax error» con `new TextFile(…)`).
+const NOT_COMPILABLE: [&str; 13] = ["Integer", "Float", "Double", "Long", "Short", "Byte", "Boolean", "Character", "Object", "DiagBuffer", "Sound", "TextFile", "System"];
+
+/// Resultado del compilador de Vijeo para un script, para `script_lint`.
+pub struct CompilerCheck {
+    /// `Some(true)` compila; `Some(false)` no compila; `None` no se pudo comprobar.
+    pub compiles: Option<bool>,
+    /// Por qué no se comprobó, si es el caso.
+    pub note: Option<String>,
+    /// Errores y warnings del compilador que la revisión propia no da ya en esa línea.
+    pub issues: Vec<ScriptIssue>,
+}
+
+/// Junta el resultado del compilador (`compiled`) con la revisión propia (`own`) de un script.
+///
+/// - Si el script usa nombres que el compilador del MCP no conoce (objetos del proyecto que no son variables, campos de
+///   `Sys`, clases como `Integer` o `TextFile`), el resultado no es fiable: no se da ningún error suyo.
+/// - Si no, de cada línea se da el primer error del compilador (los siguientes suelen ser cascada: «Foo», «Foo.write»,
+///   «write»…), salvo que la revisión propia ya tenga un error en esa línea, y todos sus warnings.
+pub fn merge_compiler(own: &[ScriptIssue], compiled: &crate::script::Compiled, ctx: &Context) -> CompilerCheck {
+    let unknown: BTreeSet<String> = compiled.errors.iter().filter(|m| m.code == 8020 || m.code == 8016).filter_map(|m| quoted(&m.message)).filter(|n| !compilable(n, ctx)).collect();
+    if !unknown.is_empty() {
+        let names: Vec<&str> = unknown.iter().map(String::as_str).collect();
+        return CompilerCheck {
+            compiles: None,
+            note: Some(format!(
+                "no se compiló: usa {}, que el compilador del MCP todavía no conoce (objetos del proyecto que no son variables, campos de Sys, clases como Integer o TextFile); revisado sólo con las reglas propias",
+                names.join(", ")
+            )),
+            issues: Vec::new(),
+        };
+    }
+    let own_error_lines: BTreeSet<u32> = own.iter().filter(|i| i.severity == MessageSeverity::Error).map(|i| i.line).collect();
+    let mut issues = Vec::new();
+    let mut lines = BTreeSet::new();
+    let mut errors: Vec<&crate::script::Message> = compiled.errors.iter().collect();
+    errors.sort_by_key(|m| (m.line, m.column));
+    for m in errors {
+        if own_error_lines.contains(&m.line) || !lines.insert(m.line) {
+            continue;
+        }
+        issues.push(ScriptIssue { severity: MessageSeverity::Error, line: m.line, column: m.column, message: format!("{} (compilador de Vijeo, {})", m.message, m.code) });
+    }
+    for m in &compiled.warnings {
+        let i = ScriptIssue { severity: MessageSeverity::Warning, line: m.line, column: m.column, message: format!("{} (compilador de Vijeo, {})", m.message, m.code) };
+        if !issues.contains(&i) {
+            issues.push(i);
+        }
+    }
+    let compiles = compiled.compiled.is_some() && compiled.errors.is_empty();
+    CompilerCheck { compiles: Some(compiles), note: None, issues }
+}
+
+/// Lo que va entre comillas en un mensaje del compilador (`Undeclared method "write"`).
+fn quoted(msg: &str) -> Option<String> {
+    let a = msg.find('"')?;
+    let b = msg[a + 1..].find('"')?;
+    Some(msg[a + 1..a + 1 + b].to_owned())
+}
+
+/// Si un nombre que el compilador no encontró es un error de verdad: no lo es si es (o empieza por) un objeto del
+/// proyecto que no es variable, una clase que el compilador del MCP no conoce o un campo de `Sys` (`Sys.INFO_…`).
+fn compilable(name: &str, ctx: &Context) -> bool {
+    let root = name.split('.').next().unwrap_or(name);
+    if NOT_COMPILABLE.contains(&root) {
+        return false;
+    }
+    if root == "Sys" {
+        let rest = &name[root.len()..];
+        return rest.is_empty() || SYS_METHODS.contains(&rest.trim_start_matches('.'));
+    }
+    let lower = root.to_lowercase();
+    let is_var = ctx.lower.contains_key(&lower) || ctx.folders.contains(&lower);
+    is_var || !ctx.objects.contains(&lower)
+}
+
 /// Revisa un script. Las posiciones son del propio texto (línea y columna desde 1).
 pub fn lint(src: &str, ctx: &Context) -> Vec<ScriptIssue> {
     let mut out = Out(Vec::new());

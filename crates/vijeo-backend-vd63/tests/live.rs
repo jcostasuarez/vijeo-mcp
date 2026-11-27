@@ -808,9 +808,20 @@ mod live {
         for l in &issues {
             eprintln!("{} [{:?}]: {:?}", l.location, l.script_type, l.issues);
         }
+        // Con el compilador de Vijeo: los scripts del ejemplo compilan.
+        assert!(!lints.is_empty());
+        for l in &lints {
+            assert_eq!(l.compiles, Some(true), "{} {:?} {:?}", l.location, l.compiler_note, l.issues);
+        }
         let one = ReportOps::lint_scripts(&b, p, None, Some("int a = 0;\nNoExiste_Var.write(a);")).unwrap();
         assert_eq!(one.len(), 1);
+        // La variable que no existe la da la revisión propia; el compilador tampoco lo compila, sin repetir el error.
         assert_eq!(one[0].issues.len(), 1, "{:?}", one[0].issues);
+        assert_eq!(one[0].compiles, Some(false));
+        // Un error de sintaxis que sólo ve el compilador (falta el punto y coma), con su línea.
+        let syntax = ReportOps::lint_scripts(&b, p, None, Some("int a = 0\nint b = a + 1;")).unwrap();
+        assert_eq!(syntax[0].compiles, Some(false));
+        assert!(syntax[0].issues.iter().any(|i| i.message.contains("compilador de Vijeo") && i.line == 2), "{:?}", syntax[0].issues);
         ProjectOps::close(&b, p, true).unwrap();
 
         if let Some(extra) = std::env::var_os("VIJEO_MCP_LIVE_LINT").map(PathBuf::from) {

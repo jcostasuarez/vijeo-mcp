@@ -887,7 +887,7 @@ impl TargetOps for Vd63Backend {
         Ok(found)
     }
 
-    fn create_panel(&self, p: ProjectId, target: &str, name: Option<&str>) -> VijeoResult<CreatedPanel> {
+    fn create_panel(&self, p: ProjectId, target: &str, kind: PanelKind, name: Option<&str>) -> VijeoResult<CreatedPanel> {
         self.require(Capability::PanelCreate)?;
         let name = name.map(str::trim).filter(|n| !n.is_empty());
         if let Some(n) = name {
@@ -895,15 +895,16 @@ impl TargetOps for Vd63Backend {
         }
         let inst = self.get(p)?;
         let t = select_target(self.targets_of(&inst)?, Some(target))?.remove(0).name;
+        let popup = kind == PanelKind::Popup;
         if let Some(n) = name {
-            let existing = self.from_vxml(p, Some(&t), vxml::base_panel_refs)?;
-            if let Some(r) = existing.iter().find(|r| r.path.rsplit('\\').next().is_some_and(|x| x.eq_ignore_ascii_case(n))) {
-                return Err(VijeoError::invalid("name", format!("ya hay un panel base con ese nombre: {}", r.path)));
+            let existing = self.from_vxml(p, Some(&t), vxml::screens)?;
+            if let Some(s) = existing.iter().find(|s| s.popup == popup && s.name.eq_ignore_ascii_case(n)) {
+                return Err(VijeoError::invalid("name", format!("ya hay {} con ese nombre: {}", kind_label(kind), screen_path(kind, &s.path))));
             }
         }
-        let (panel_id, got) = inst.with_ui("crear el panel", |u| u.new_panel(&t, name))?;
+        let (panel_id, got) = inst.with_ui("crear el panel", |u| u.new_panel(&t, name, popup))?;
         inst.mark_unsaved();
-        Ok(CreatedPanel { path: format!("BP:\\{got}"), name: got, panel_id })
+        Ok(CreatedPanel { path: screen_path(kind, &got), name: got, panel_id })
     }
 
     fn add_equipment(&self, req: &EquipmentAddRequest) -> VijeoResult<EquipmentAddResult> {

@@ -100,7 +100,8 @@ tiene (target_config) se añade a él; si no, se crea con New Driver (`driver` c
 `Modbus (RTU)`…; si no está, el error lista los disponibles). Nombre, y en equipos de red IP y Unit ID; el driver \
 nuevo queda con su configuración por defecto. Luego project_save.
 - panel_create crea un panel base vacío en un target (con el nombre pedido; Vijeo le da el siguiente PanelID) y lo \
-deja abierto; luego panel_insert le pone objetos. panel_rename renombra un panel base o una ventana emergente \
+deja abierto, o con kind=popup una ventana emergente nueva (con su panel dentro); luego panel_insert le pone objetos \
+(un botón con open_popup abre la ventana). panel_rename renombra un panel base o una ventana emergente \
 (kind=popup; su número no cambia y las acciones siguen valiendo); panel_delete la borra, negándose si alguna \
 acción, el panel inicial u otra propiedad la usa (lista dónde; con force la borra igual). Como project_goto, no \
 funcionan tras un project_build en la misma instancia.
@@ -418,7 +419,11 @@ pub struct GotoParams {
 pub struct PanelCreateParams {
     pub project: u32,
     pub target: String,
-    /// Nombre del panel nuevo (por defecto, el `Panel<n>` que le dé Vijeo). No puede repetir el de otro panel base.
+    /// `base` (por defecto) o `popup` (ventana emergente, con su panel dentro).
+    #[serde(default)]
+    pub kind: PanelKind,
+    /// Nombre del panel o de la ventana nueva (por defecto, el `Panel<n>` / `Window<n>` que le dé Vijeo). No puede
+    /// repetir el de otro del mismo tipo.
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -982,11 +987,12 @@ impl VijeoServer {
         self.blocking(move |b| Ok(GotoOut { opened: ops(b.targets(), Capability::PanelOpen, b)?.open_panel(ProjectId(p.project), &p.target, &p.panel)? })).await
     }
 
-    /// Crea un panel base vacío en el target (New Panel del Navigator) y lo deja abierto en Vijeo. Vijeo le da el
-    /// siguiente PanelID libre. Después: panel_insert para ponerle objetos y project_save.
+    /// Crea un panel base vacío en el target (New Panel del Navigator) y lo deja abierto en Vijeo, o con kind=popup una
+    /// ventana emergente nueva (New Popup Window: la ventana con su panel dentro). Vijeo le da el siguiente PanelID o
+    /// WindowID libre. Después: panel_insert para ponerle objetos (un botón con open_popup la abre) y project_save.
     #[tool(annotations(destructive_hint = false, idempotent_hint = false, open_world_hint = false))]
     async fn panel_create(&self, Parameters(p): Parameters<PanelCreateParams>) -> ToolResult<CreatedPanel> {
-        self.blocking(move |b| ops(b.targets(), Capability::PanelCreate, b)?.create_panel(ProjectId(p.project), &p.target, p.name.as_deref())).await
+        self.blocking(move |b| ops(b.targets(), Capability::PanelCreate, b)?.create_panel(ProjectId(p.project), &p.target, p.kind, p.name.as_deref())).await
     }
 
     /// Renombra un panel base o una ventana emergente (kind=popup) del target en el Navigator. Su número (PanelID o

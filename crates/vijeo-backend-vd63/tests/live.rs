@@ -1004,13 +1004,13 @@ mod live {
         let names = || -> Vec<String> { tops.panels(p, &target).unwrap().into_iter().map(|r| r.path).collect() };
         let start = names();
 
-        let c1 = tops.create_panel(p, &target, None).unwrap();
+        let c1 = tops.create_panel(p, &target, vijeo_core::PanelKind::Base, None).unwrap();
         eprintln!("{c1:?}");
         assert_eq!((c1.name.as_str(), c1.panel_id, c1.path.as_str()), ("Panel5", 5, "BP:\\Panel5"));
-        let c2 = tops.create_panel(p, &target, Some("Motores")).unwrap();
+        let c2 = tops.create_panel(p, &target, vijeo_core::PanelKind::Base, Some("Motores")).unwrap();
         eprintln!("{c2:?}");
         assert_eq!((c2.name.as_str(), c2.panel_id, c2.path.as_str()), ("Motores", 6, "BP:\\Motores"));
-        let dup = tops.create_panel(p, &target, Some("start")).unwrap_err();
+        let dup = tops.create_panel(p, &target, vijeo_core::PanelKind::Base, Some("start")).unwrap_err();
         assert_eq!(dup.code(), "invalid_argument", "{dup}");
         let mut now = names();
         assert!(now.contains(&c1.path) && now.contains(&c2.path), "{now:?}");
@@ -1018,7 +1018,7 @@ mod live {
         // Los tres primeros los rechazaba Vijeo (error 2003) y se deshacían; ahora no pasan la comprobación previa.
         // «_Motor» también lo rechazaba Vijeo (2003, el panel creado se borraba): ahora tampoco pasa la comprobación previa.
         for weird in ["Mot ores", "1Motor", "Motor-2", "Válvula", "_Motor"] {
-            let r = tops.create_panel(p, &target, Some(weird));
+            let r = tops.create_panel(p, &target, vijeo_core::PanelKind::Base, Some(weird));
             eprintln!("«{weird}»: {r:?}");
             let after = names();
             match r {
@@ -1056,6 +1056,59 @@ mod live {
         let empty = built.messages.iter().filter(|m| m.text.contains("Panel is empty")).count() as i32;
         assert!(empty >= 1, "{:?}", built.messages);
         assert_eq!(built.warnings, base.warnings + empty, "{:?}", built.messages);
+        b.shutdown().unwrap();
+    }
+
+    /// panel_create con kind popup sobre el ejemplo Modbus (que tiene la ventana `1: ComErrorCodes`): una con el nombre de
+    /// Vijeo (`Window1`, WindowID 2) y otra llamada «Avisos»; nombre repetido o inválido no crea nada. Un botón nuevo la
+    /// abre con open_popup; el XML tiene las ventanas con sus paneles y la copia compila con los errores del original.
+    #[test]
+    fn live_popup_create() {
+        use vijeo_core::{PanelInsertRequest, PanelKind};
+        let Some(src) = modbus() else { return };
+        let b = backend();
+        let errs = |m: &[vijeo_core::BuildMessage]| {
+            let mut v: Vec<_> = m.iter().filter(|m| m.severity == vijeo_core::MessageSeverity::Error).map(|m| m.code).collect();
+            v.sort();
+            v
+        };
+        let base = b.build().unwrap().build_file(&src, None).unwrap();
+        let info = b.projects().unwrap().open(&src).unwrap();
+        let (p, target) = (info.id, info.targets[0].name.clone());
+        let tops = b.targets().unwrap();
+        let w1 = tops.create_panel(p, &target, PanelKind::Popup, None).unwrap();
+        eprintln!("{w1:?}");
+        assert_eq!((w1.name.as_str(), w1.panel_id, w1.path.as_str()), ("Window1", 2, "Window1"));
+        let w2 = tops.create_panel(p, &target, PanelKind::Popup, Some("Avisos")).unwrap();
+        eprintln!("{w2:?}");
+        assert_eq!((w2.name.as_str(), w2.panel_id), ("Avisos", 3));
+        for bad in ["comerrorcodes", "Mal nombre"] {
+            let e = tops.create_panel(p, &target, PanelKind::Popup, Some(bad)).unwrap_err();
+            eprintln!("{bad}: {e}");
+            assert_eq!(e.code(), "invalid_argument", "{e}");
+        }
+        let ins: PanelInsertRequest = serde_json::from_value(serde_json::json!({
+            "project": p.0, "target": target, "panel": "Alarms",
+            "items": [{"create": {"type": "switch", "label": "Avisos", "on_touch": [{"op": "open_popup", "popup": "Avisos"}]}, "x": 10, "y": 10, "name": "McpAbreAvisos"}]
+        }))
+        .unwrap();
+        panels_insert(&b, &ins);
+        let dir = work_dir("popup_create");
+        let x = b.reports().unwrap().export_xml(p, &dir.join("xml"), true).unwrap();
+        let xml = std::fs::read_to_string(&x.path).unwrap();
+        for want in [r#"<Window Name="Window1" WindowID="W2""#, r#"<Window Name="Avisos" WindowID="W3""#] {
+            assert!(xml.contains(want), "falta {want}");
+        }
+        let ids = b.reports().unwrap().panels(p, Some(&target)).unwrap();
+        let pops: Vec<&str> = ids.iter().filter(|r| r.group == "Popup Windows").map(|r| r.path.as_str()).collect();
+        eprintln!("popups: {pops:?}");
+        assert_eq!(pops, ["ComErrorCodes", "Window1", "Avisos"]);
+        let vdz = dir.join("McpPopupNuevo.vdz");
+        b.projects().unwrap().save(p, Some(&vdz), true).unwrap();
+        b.projects().unwrap().close(p, false).unwrap();
+        let built = b.build().unwrap().build_file(&vdz, None).unwrap();
+        eprintln!("original: {:?}\ncopia: {:?}", base.messages, built.messages);
+        assert_eq!(errs(&built.messages), errs(&base.messages));
         b.shutdown().unwrap();
     }
 
@@ -1100,8 +1153,8 @@ mod live {
         }
         assert_eq!(names(), before);
 
-        tops.create_panel(p, &target, Some("Libre")).unwrap();
-        tops.create_panel(p, &target, Some("Usado")).unwrap();
+        tops.create_panel(p, &target, vijeo_core::PanelKind::Base, Some("Libre")).unwrap();
+        tops.create_panel(p, &target, vijeo_core::PanelKind::Base, Some("Usado")).unwrap();
         let ins: PanelInsertRequest = serde_json::from_value(serde_json::json!({
             "project": p.0, "target": target, "panel": "Rfid_Uno",
             "items": [{"create": {"type": "switch", "label": "Usado", "on_touch": [{"op": "change_panel", "panel": "Usado"}]}, "x": 10, "y": 10, "name": "McpIrUsado"}]

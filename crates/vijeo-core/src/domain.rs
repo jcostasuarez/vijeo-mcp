@@ -240,13 +240,14 @@ pub struct PanelRef {
     pub path: String,
 }
 
-/// Panel base recién creado con `panel_create`.
+/// Panel base o ventana emergente recién creados con `panel_create`.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct CreatedPanel {
-    /// Ruta como en panel_list (`BP:\Motores`).
+    /// Ruta como en panel_list (`BP:\Motores`); en una ventana emergente, su nombre.
     pub path: String,
     pub name: String,
-    /// PanelID que le dio Vijeo (el siguiente libre): el número de «cambiar de panel» y del Navigator (`5: Motores`).
+    /// PanelID que le dio Vijeo (el siguiente libre): el número de «cambiar de panel» y del Navigator (`5: Motores`). En una
+    /// ventana emergente, su WindowID (`2: Avisos`).
     pub panel_id: u32,
 }
 

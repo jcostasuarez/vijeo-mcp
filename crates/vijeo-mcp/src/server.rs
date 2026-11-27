@@ -25,6 +25,9 @@ const TOOL_CAPS: &[(&str, Capability)] = &[
     ("project_close", Capability::ProjectLifecycle),
     ("project_rename", Capability::ProjectLifecycle),
     ("project_show_in_vijeo", Capability::ProjectLifecycle),
+    ("vdz_copy", Capability::VdzFiles),
+    ("vdz_rename", Capability::VdzFiles),
+    ("vdz_delete", Capability::VdzFiles),
     ("target_list", Capability::TargetManage),
     ("target_add", Capability::TargetManage),
     ("target_delete", Capability::TargetManage),
@@ -71,6 +74,9 @@ project_build/variable_* → project_save → project_close.
 - Un proyecto creado o guardado con el MCP es un .vdz en la ruta indicada: **no sale en la lista de proyectos de \
 Vijeo** (que es Vijeo-Manager) hasta abrirlo. Al terminar, dile al usuario la ruta del .vdz; si quiere verlo en \
 Vijeo, project_show_in_vijeo lo abre en una ventana suya (Vijeo lo importa a su lista).
+- Ficheros .vdz sin abrir Vijeo: vdz_copy copia (con otro nombre de proyecto, por defecto el del fichero nuevo), \
+vdz_rename renombra el fichero y/o el nombre del proyecto, vdz_delete lo manda a la Papelera (pide confirmación al \
+usuario antes). Ninguna toca Vijeo-Manager ni proyectos abiertos en el MCP.
 - Los modelos HMI se eligen con catalog_list_models (sólo los `creatable` se pueden crear; `probe` indica que \
 se comprobó creando el target en esta instalación); project_new exige el primer target.
 - project_build/target_build devuelven el texto de cada error y warning (con `path` compilan una copia de un \
@@ -200,6 +206,41 @@ pub struct ProjectShowParams {
     /// Proyecto abierto en el MCP: se abre su .vdz tal como está guardado (o `path`).
     #[serde(default)]
     pub project: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct VdzCopyParams {
+    /// Ruta absoluta del .vdz de origen (sólo se lee).
+    pub path: PathBuf,
+    /// Ruta absoluta del .vdz nuevo.
+    pub dest: PathBuf,
+    /// Nombre del proyecto en la copia (el que verá Vijeo). Por defecto, el nombre del fichero `dest`.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Reemplazar `dest` si ya existe.
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct VdzRenameParams {
+    /// Ruta absoluta del .vdz.
+    pub path: PathBuf,
+    /// Ruta nueva del fichero (misma carpeta u otra). Sin ella, sólo cambia el nombre del proyecto.
+    #[serde(default)]
+    pub dest: Option<PathBuf>,
+    /// Nombre de proyecto nuevo. Por defecto, con `dest`, el nombre del fichero nuevo.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Reemplazar `dest` si ya existe.
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct VdzDeleteParams {
+    /// Ruta absoluta del .vdz que se manda a la Papelera.
+    pub path: PathBuf,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -670,6 +711,27 @@ impl VijeoServer {
     #[tool(annotations(destructive_hint = false, idempotent_hint = false, open_world_hint = false))]
     async fn project_show_in_vijeo(&self, Parameters(p): Parameters<ProjectShowParams>) -> ToolResult<ShownProject> {
         self.blocking(move |b| ops(b.projects(), Capability::ProjectLifecycle, b)?.show_in_vijeo(p.path.as_deref(), p.project.map(ProjectId))).await
+    }
+
+    /// Copia un .vdz sin abrir Vijeo, con otro nombre de proyecto (por defecto, el nombre del fichero nuevo), para que
+    /// en Vijeo no choque con el original. La copia se relee antes de ponerla en su sitio.
+    #[tool(annotations(destructive_hint = false, idempotent_hint = true, open_world_hint = false))]
+    async fn vdz_copy(&self, Parameters(p): Parameters<VdzCopyParams>) -> ToolResult<VdzFileResult> {
+        self.blocking(move |b| ops(b.files(), Capability::VdzFiles, b)?.copy_vdz(&p.path, &p.dest, p.name.as_deref(), p.overwrite)).await
+    }
+
+    /// Renombra un .vdz sin abrir Vijeo: el fichero (`dest`) y/o el nombre del proyecto (`name`; con `dest`, por defecto
+    /// el nombre del fichero nuevo). Se niega si está abierto en el MCP.
+    #[tool(annotations(destructive_hint = true, idempotent_hint = false, open_world_hint = false))]
+    async fn vdz_rename(&self, Parameters(p): Parameters<VdzRenameParams>) -> ToolResult<VdzFileResult> {
+        self.blocking(move |b| ops(b.files(), Capability::VdzFiles, b)?.rename_vdz(&p.path, p.dest.as_deref(), p.name.as_deref(), p.overwrite)).await
+    }
+
+    /// Manda un .vdz a la Papelera de reciclaje (se recupera desde ahí). Se niega en Vijeo-Manager, la instalación y
+    /// las carpetas protegidas, y si está abierto en el MCP. Confirma con el usuario antes de usarla.
+    #[tool(annotations(destructive_hint = true, idempotent_hint = false, open_world_hint = false))]
+    async fn vdz_delete(&self, Parameters(p): Parameters<VdzDeleteParams>) -> ToolResult<VdzFileResult> {
+        self.blocking(move |b| ops(b.files(), Capability::VdzFiles, b)?.delete_vdz(&p.path)).await
     }
 
     /// Nombre, ruta, cambios sin guardar y targets de un proyecto abierto.

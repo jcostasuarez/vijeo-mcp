@@ -116,6 +116,38 @@ fn smoke_list_and_catalog() {
     assert!(!err, "{modbus}");
     assert!(modbus["drivers"].as_array().unwrap().iter().any(|d| d["id"] == "Schneider_Modbus_TCP"), "{modbus}");
 
+    // Ficheros .vdz (vdz_copy / vdz_rename / vdz_delete). El borrado real (Papelera) no se prueba aquí para no llenarla.
+    assert!(["vdz_copy", "vdz_rename", "vdz_delete"].iter().all(|t| names.contains(t)));
+    let (err, msg) = c.call("vdz_delete", json!({"path": r"C:\no-existe-mcp\x.vdz"}));
+    assert!(err && msg.as_str().unwrap().contains("[invalid_argument]"), "{msg}");
+    let (err, msg) = c.call("vdz_rename", json!({"path": r"C:\no-existe-mcp\x.vdz", "name": "B"}));
+    assert!(err && msg.as_str().unwrap().contains("[invalid_argument]"), "{msg}");
+    let example = r"C:\Program Files (x86)\Schneider Electric\EcoStruxure Machine Expert - Basic\Examples\Compact_Modbus SL_M221_Book.vdz";
+    if std::path::Path::new(example).is_file() {
+        let dir = std::env::temp_dir().join("vijeo-mcp-smoke-vdz");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("SmokeA.vdz"), dir.join("SmokeB.vdz"));
+        let (err, r) = c.call("vdz_copy", json!({"path": example, "dest": a}));
+        assert!(!err && r["name"] == "SmokeA", "{r}");
+        let (err, msg) = c.call("vdz_copy", json!({"path": example, "dest": a}));
+        assert!(err && msg.as_str().unwrap().contains("ya existe"), "{msg}");
+        let (err, r) = c.call("vdz_copy", json!({"path": example, "dest": a, "name": "Con espacio", "overwrite": true}));
+        assert!(!err && r["name"] == "Con espacio", "{r}");
+        let (err, r) = c.call("vdz_rename", json!({"path": a, "dest": b}));
+        assert!(!err && r["name"] == "SmokeB" && !a.exists() && b.exists(), "{r}");
+        let (err, r) = c.call("vdz_rename", json!({"path": b, "name": "Otro"}));
+        assert!(!err && r["name"] == "Otro", "{r}");
+        let (err, msg) = c.call("vdz_rename", json!({"path": b, "name": "Otro"}));
+        assert!(err && msg.as_str().unwrap().contains("ya se llama"), "{msg}");
+        for bad in [json!({"path": example, "dest": r"C:\Users\Public\Documents\Vijeo-Designer 6.3\Vijeo-Manager\x.vdz"}), json!({"path": example, "dest": dir.join("x.txt")}), json!({"path": example, "dest": dir.join("y.vdz"), "name": "a.b"})] {
+            let (err, msg) = c.call("vdz_copy", bad);
+            let m = msg.as_str().unwrap();
+            assert!(err && (m.contains("[invalid_argument]") || m.contains("[refused]")), "{m}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // Variables sin Vijeo (vdz_variable_list / vdz_variable_edit).
     assert!(names.contains(&"vdz_variable_list") && names.contains(&"vdz_variable_edit"));
     let (err, msg) = c.call("vdz_variable_edit", json!({"path": r"C:\no-existe-mcp\x.vdz", "edits": [{"op": "add_folder", "path": "A"}]}));

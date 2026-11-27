@@ -218,6 +218,7 @@ impl Vd63Backend {
             // El formato de lo que se escribe sólo está verificado con 6.3.
             Capability::ConfigEdit,
             Capability::OfflineVariables,
+            Capability::VdzFiles,
             Capability::VariableCsv,
             Capability::ScriptLint,
             Capability::PanelOpen,
@@ -1709,6 +1710,142 @@ impl FileOps for Vd63Backend {
         std::fs::create_dir_all(&output).map_err(|e| VijeoError::io(&output, e))?;
         let req = DataConvertRequest { output, ..req.clone() };
         dataconv::run(&self.inst.frame_dir.join(dataconv::EXE), &req, self.cfg.build_timeout)
+    }
+
+    fn copy_vdz(&self, src: &Path, dest: &Path, name: Option<&str>, overwrite: bool) -> VijeoResult<VdzFileResult> {
+        self.require(Capability::VdzFiles)?;
+        // El origen sólo se lee: vale cualquier .vdz (también los ejemplos de la instalación).
+        check_vdz_input("path", src)?;
+        let dest = self.vdz_target("dest", dest, overwrite, Some(src))?;
+        if same_path(src, &dest) {
+            return Err(VijeoError::invalid("dest", "es el mismo fichero que path"));
+        }
+        let old = swx::project_name(src)?;
+        let (name, mut notes) = project_name_for(name, &dest, &old)?;
+        write_vdz_copy(src, &dest, &name)?;
+        notes.extend(self.vijeo_list_note(&name));
+        Ok(VdzFileResult { path: dest, name, from: Some(src.to_path_buf()), notes })
+    }
+
+    fn rename_vdz(&self, src: &Path, dest: Option<&Path>, name: Option<&str>, overwrite: bool) -> VijeoResult<VdzFileResult> {
+        self.require(Capability::VdzFiles)?;
+        check_vdz_input("path", src)?;
+        let src = validate::vdz_path("path", src, &self.protected)?;
+        if dest.is_none() && name.is_none() {
+            return Err(VijeoError::invalid("dest", "indica dest (fichero nuevo), name (nombre de proyecto nuevo) o los dos"));
+        }
+        self.refuse_open("path", &src)?;
+        let dest = match dest {
+            Some(d) => self.vdz_target("dest", d, overwrite, Some(&src))?,
+            None => src.clone(),
+        };
+        let old = swx::project_name(&src)?;
+        let (new_name, mut notes) = match (name, dest != src) {
+            (None, false) => (old.clone(), Vec::new()),
+            _ => project_name_for(name, &dest, &old)?,
+        };
+        let moved = !same_path(&src, &dest);
+        let case_only = moved && src.to_string_lossy().eq_ignore_ascii_case(&dest.to_string_lossy());
+        if new_name == old && !moved && !case_only {
+            return Err(VijeoError::invalid("name", format!("el proyecto ya se llama «{old}» y el fichero no cambia")));
+        }
+        if new_name != old {
+            write_vdz_copy(&src, &dest, &new_name)?;
+            if moved && !case_only {
+                std::fs::remove_file(&src).map_err(|e| VijeoError::io(&src, format!("el nuevo .vdz quedó en {}, pero no se pudo borrar el original: {e}", dest.display())))?;
+            }
+        } else if std::fs::rename(&src, &dest).is_err() {
+            // Otra unidad: copia, comprobación y borrado del original.
+            write_vdz_copy(&src, &dest, &new_name)?;
+            std::fs::remove_file(&src).map_err(|e| VijeoError::io(&src, format!("el .vdz se copió a {}, pero no se pudo borrar el original: {e}", dest.display())))?;
+        }
+        if new_name != old {
+            notes.push(format!("nombre de proyecto: «{old}» → «{new_name}»"));
+        }
+        notes.extend(self.vijeo_list_note(&new_name));
+        Ok(VdzFileResult { path: dest, name: new_name, from: Some(src), notes })
+    }
+
+    fn delete_vdz(&self, path: &Path) -> VijeoResult<VdzFileResult> {
+        self.require(Capability::VdzFiles)?;
+        check_vdz_input("path", path)?;
+        let path = validate::vdz_path("path", path, &self.protected)?;
+        self.refuse_open("path", &path)?;
+        let name = swx::project_name(&path)?;
+        vijeo_ui::process::recycle(&path)?;
+        Ok(VdzFileResult {
+            path,
+            name,
+            from: None,
+            notes: vec!["está en la Papelera de reciclaje: se recupera desde ahí (no se borró definitivamente)".into()],
+        })
+    }
+}
+
+/// Nombre de proyecto para una copia o un renombrado: el pedido o, si no, el del fichero destino si es un nombre válido
+/// (si no, se deja el que tenía).
+fn project_name_for(name: Option<&str>, dest: &Path, old: &str) -> VijeoResult<(String, Vec<String>)> {
+    if let Some(n) = name.map(str::trim) {
+        validate::name("name", n)?;
+        return Ok((n.to_owned(), Vec::new()));
+    }
+    let stem = dest.file_stem().and_then(|s| s.to_str()).unwrap_or_default().trim().to_owned();
+    if validate::name("name", &stem).is_ok() {
+        Ok((stem, Vec::new()))
+    } else {
+        Ok((old.to_owned(), vec![format!("«{stem}» no vale como nombre de proyecto: se deja «{old}» (indica name para cambiarlo)")]))
+    }
+}
+
+/// Escribe `src` con el proyecto `name` en `dest`: al lado, como temporal, y sólo lo pone en su sitio si se relee bien.
+fn write_vdz_copy(src: &Path, dest: &Path, name: &str) -> VijeoResult<()> {
+    let tmp = dest.with_file_name(format!("{}.mcp-tmp", dest.file_name().unwrap_or_default().to_string_lossy()));
+    let r = (|| {
+        vdz::copy_with_project_name(src, &tmp, name)?;
+        swx::open_vdz(&tmp)?;
+        let got = swx::project_name(&tmp)?;
+        if got != name {
+            return Err(VijeoError::Internal(format!("la copia quedó con el nombre «{got}» en vez de «{name}»")));
+        }
+        std::fs::rename(&tmp, dest).map_err(|e| VijeoError::io(dest, e))
+    })();
+    if r.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    r
+}
+
+impl Vd63Backend {
+    /// Se niega si `p` está abierto como proyecto en el MCP (su ventana no vería el cambio y lo pisaría al guardar).
+    fn refuse_open(&self, field: &str, p: &Path) -> VijeoResult<()> {
+        for i in self.pool.lock().unwrap().map.values() {
+            if i.path().is_some_and(|q| same_path(&q, p)) {
+                return Err(VijeoError::Refused(format!("{field}: {} está abierto como proyecto {}: ciérralo antes con project_close", p.display(), i.id)));
+            }
+        }
+        Ok(())
+    }
+
+    /// Destino `.vdz` válido: fuera de las carpetas protegidas, con carpeta, no abierto en el MCP y, si existe, sólo con
+    /// `overwrite` (salvo que sea `src`).
+    fn vdz_target(&self, field: &str, dest: &Path, overwrite: bool, src: Option<&Path>) -> VijeoResult<PathBuf> {
+        let d = validate::vdz_path(field, dest, &self.protected)?;
+        if !d.parent().is_some_and(Path::is_dir) {
+            return Err(VijeoError::invalid(field, format!("la carpeta de {} no existe", d.display())));
+        }
+        let is_src = src.is_some_and(|s| same_path(s, &d));
+        if d.exists() && !is_src && !overwrite {
+            return Err(VijeoError::invalid(field, format!("{} ya existe (usa overwrite=true para reemplazarlo)", d.display())));
+        }
+        self.refuse_open(field, &d)?;
+        Ok(d)
+    }
+
+    /// Aviso si Vijeo ya tiene en su lista un proyecto con ese nombre.
+    fn vijeo_list_note(&self, name: &str) -> Option<String> {
+        self.workspace.join(name).exists().then(|| {
+            format!("Vijeo ya tiene un proyecto «{name}» en su lista: project_show_in_vijeo se negaría a abrir éste (cambia el nombre con name)")
+        })
     }
 }
 

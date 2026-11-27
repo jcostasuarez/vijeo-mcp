@@ -31,6 +31,8 @@ pub enum Capability {
     ConfigEdit,
     /// Variables y carpetas leídas y cambiadas directamente en el `.vdz`, sin Vijeo.
     OfflineVariables,
+    /// Copiar, renombrar y mandar a la Papelera ficheros `.vdz`, sin Vijeo.
+    VdzFiles,
     /// Validar un `.vxml` contra el `public.xsd` de la instalación, sin Vijeo.
     XmlValidate,
     /// Revisar los scripts del proyecto (o un texto suelto) contra sus variables y la API de scripts.
@@ -56,7 +58,7 @@ pub enum Capability {
 }
 
 impl Capability {
-    pub const ALL: [Capability; 23] = [
+    pub const ALL: [Capability; 24] = [
         Capability::ProjectLifecycle,
         Capability::TargetManage,
         Capability::Build,
@@ -69,6 +71,7 @@ impl Capability {
         Capability::ProjectConfig,
         Capability::ConfigEdit,
         Capability::OfflineVariables,
+        Capability::VdzFiles,
         Capability::XmlValidate,
         Capability::ScriptLint,
         Capability::VariableCsv,
@@ -96,6 +99,7 @@ impl Capability {
             Capability::ProjectConfig => "project_config",
             Capability::ConfigEdit => "config_edit",
             Capability::OfflineVariables => "offline_variables",
+            Capability::VdzFiles => "vdz_files",
             Capability::XmlValidate => "xml_validate",
             Capability::ScriptLint => "script_lint",
             Capability::VariableCsv => "variable_csv",

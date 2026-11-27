@@ -12,12 +12,13 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
+use vijeo_ui::clipboard;
 use vijeo_ui::feedback::feedback_lines;
 use vijeo_ui::tree::{RemoteTree, TreeItem};
 use vijeo_ui::ui::{UiDialog, UiInstance};
 use vijeo_core::{FeedbackLog, VijeoError, VijeoResult};
 
-use crate::{feedback, vdz};
+use crate::{feedback, objects, vdz};
 
 /// Ids del recurso `MENU 1008` de `Main.ENU` (6.3.0.103).
 const CMD_NEW_PROJECT: u16 = 0xC095;
@@ -30,6 +31,13 @@ const CMD_IMPORT_VARIABLES: u16 = 0xC419;
 /// Export Project del menú Import/Export cuando `SupportsXMLImportExport` está activo (el `0xC0A7` del
 /// recurso no abre nada).
 const CMD_EXPORT_PROJECT: u16 = 0xC147;
+/// Edición en el editor de paneles (`Main.ENU`, inventario §13.1). Los ids estándar de MFC no hacen nada.
+const CMD_CUT: u16 = 0xC03C;
+const CMD_COPY: u16 = 0xC03D;
+const CMD_PASTE: u16 = 0xC03E;
+const CMD_SELECT_ALL: u16 = 0xC043;
+/// Lo que se espera a que termine un Copy/Cut/Paste antes de mirar si abrió un diálogo.
+const EDIT_COMMAND_WAIT: Duration = Duration::from_secs(10);
 
 /// Casilla «Do not show project conversion help topics» del aviso de actualizar de versión.
 const CONVERSION_CHECKBOX: i32 = 10030;
@@ -704,6 +712,53 @@ impl UiProject {
             }
             e => e,
         })
+    }
+
+    /// Comando de menú esperando a que Vijeo lo termine. Si no termina en [`EDIT_COMMAND_WAIT`] (un diálogo
+    /// modal, o un pegado grande), se responde a los diálogos conocidos y se espera a que vuelva a atender.
+    fn sync_command(&mut self, op: &str, id: u16) -> VijeoResult<()> {
+        if self.ui.command_sync(id, EDIT_COMMAND_WAIT) {
+            return self.handle_dialogs(&|_| false);
+        }
+        self.wait_until(op, self.t.call, |p| (p.ui.dialogs().is_empty() && p.ui.responsive()).then_some(()))
+    }
+
+    /// Da el foco al editor del panel abierto: Copy/Cut/Paste van a lo que tiene el foco.
+    fn focus_document(&mut self) -> VijeoResult<()> {
+        if self.ui.focus_active_document() {
+            std::thread::sleep(Duration::from_millis(200));
+            Ok(())
+        } else {
+            Err(VijeoError::Internal("no hay ningún panel abierto en el editor de Vijeo".into()))
+        }
+    }
+
+    /// Abre el panel y copia (o corta, con `cut`) todos sus objetos: Select All + Copy/Cut con el foco en el
+    /// editor. Devuelve el contenido del formato de objetos del portapapeles, o `None` si el panel no tiene
+    /// objetos. Deja el portapapeles con eso: quien llama guarda y devuelve el del usuario.
+    pub fn copy_objects(&mut self, target: &str, path: &str, cut: bool) -> VijeoResult<Option<Vec<u8>>> {
+        self.open_panel(target, path)?;
+        self.focus_document()?;
+        let fmt = clipboard::format(objects::CLIPBOARD_FORMAT);
+        clipboard::clear().map_err(VijeoError::Internal)?;
+        self.sync_command("seleccionar los objetos", CMD_SELECT_ALL)?;
+        let (op, cmd) = if cut { ("cortar los objetos", CMD_CUT) } else { ("copiar los objetos", CMD_COPY) };
+        self.sync_command(op, cmd)?;
+        if clipboard::has_format(clipboard::format(objects::PANEL_CLIPBOARD_FORMAT)) {
+            return Err(VijeoError::Internal("Vijeo copió el panel entero en vez de sus objetos (el foco estaba en el Navigator)".into()));
+        }
+        if !clipboard::has_format(fmt) {
+            return Ok(None);
+        }
+        let bytes = clipboard::get_ole(fmt).map_err(VijeoError::Internal)?;
+        bytes.map(Some).ok_or_else(|| VijeoError::Internal(format!("Vijeo ofreció {} pero no lo entregó", objects::CLIPBOARD_FORMAT)))
+    }
+
+    /// Pega `cfb` (contenido del formato de objetos) en el panel abierto en el editor.
+    pub fn paste_objects(&mut self, cfb: &[u8]) -> VijeoResult<()> {
+        self.focus_document()?;
+        clipboard::set(clipboard::format(objects::CLIPBOARD_FORMAT), cfb).map_err(VijeoError::Internal)?;
+        self.sync_command("pegar los objetos", CMD_PASTE)
     }
 
     /// Renombra el target editando su etiqueta en el Navigator. Devuelve el nombre que queda.

@@ -46,6 +46,10 @@ const TOOL_CAPS: &[(&str, Capability)] = &[
     ("variables_generate_csv", Capability::VariableCsv),
     ("variables_import", Capability::VariableImport),
     ("data_convert", Capability::DataConvert),
+    ("panel_objects", Capability::PanelObjects),
+    ("panel_edit", Capability::PanelObjects),
+    ("panel_insert", Capability::PanelObjects),
+    ("toolchest_list", Capability::Toolchest),
 ];
 
 const INSTRUCTIONS: &str = "\
@@ -69,7 +73,17 @@ valida (en los modelos con `dual_ethernet`, la de la ETH2, que no se cambia).
 del proyecto (Export Project, unos segundos la primera vez; se reutiliza mientras el proyecto no cambie). \
 Necesitan SupportsXMLImportExport=1 en el registro de Vijeo.
 - project_export_xml escribe el XML completo del proyecto (.vxml, public.xsd: pantallas, objetos, animaciones, \
-acciones, variables, alarmas…) con sus imágenes. No hay herramienta para importarlo ni para editar pantallas.
+acciones, variables, alarmas…) con sus imágenes. No hay herramienta para importarlo.
+- Pantallas (paneles base de un proyecto abierto), con el portapapeles de Vijeo como Copiar/Pegar: panel_objects \
+lista los objetos (ruta Grupo/Objeto, tipo, posición absoluta, textos y variables); panel_edit renombra, mueve, \
+redimensiona, cambia textos, sustituye variables (Vijeo las vuelve a enlazar por nombre), borra objetos y cambia \
+animaciones, acciones de botones y colores (dry_run para probar); panel_insert crea objetos desde cero (`create`: \
+botones con acciones, lámparas, displays numéricos y de texto, textos, rectángulos, elipses y líneas, con animaciones \
+de visibilidad, parpadeo, color, relleno y posición) o añade piezas de la Toolchest (toolchest_list, sin Vijeo) u \
+objetos copiados de otro panel. Las variables tienen que existir en el target (se comprueban en el XML). \
+Usan el portapapeles de Windows: el texto que tuviera se devuelve al terminar, el resto se pierde. Después: \
+project_build para comprobar (las piezas de la Toolchest llegan sin variables) y project_save. Como project_goto, \
+no funcionan tras un project_build en la misma instancia.
 - script_lint revisa los scripts del proyecto (o un texto con `script`, antes de pegarlo en Vijeo) contra sus \
 variables y la API de scripts: variables inexistentes o con otras mayúsculas, métodos, sintaxis. No compila: \
 project_build sigue siendo la prueba definitiva. project_goto abre un panel base en la ventana de Vijeo; \
@@ -791,6 +805,44 @@ impl VijeoServer {
     #[tool(annotations(destructive_hint = true, idempotent_hint = false, open_world_hint = false))]
     async fn variables_import(&self, Parameters(p): Parameters<VariableImportRequest>) -> ToolResult<VariableImportResult> {
         self.blocking(move |b| ops(b.variables(), Capability::VariableImport, b)?.import_csv(&p)).await
+    }
+
+    /// Objetos de un panel base del proyecto abierto (Select All + Copy en su editor): ruta para panel_edit
+    /// (`Grupo/Objeto`), tipo, posición y tamaño absolutos en el panel, textos (etiquetas…) y variables, con los
+    /// objetos de cada grupo. No cambia el proyecto; usa el portapapeles de Windows y devuelve el texto que tenía.
+    #[tool(annotations(read_only_hint = true, open_world_hint = false))]
+    async fn panel_objects(&self, Parameters(p): Parameters<GotoParams>) -> ToolResult<PanelObjectsResult> {
+        self.blocking(move |b| ops(b.panels(), Capability::PanelObjects, b)?.objects(ProjectId(p.project), &p.target, &p.panel)).await
+    }
+
+    /// Edita los objetos de un panel base: rename, move, move_to, resize, set_text (un texto entero), replace (dentro
+    /// de todas las cadenas, también variables: Vijeo las vuelve a enlazar por nombre), delete, animate (visibilidad,
+    /// parpadeo, color, relleno, posición), remove_animations, set_actions (botones) y set_colors. Se comprueban antes
+    /// de tocar nada; luego se cortan todos los objetos, se editan y se pegan, y se comprueba el resultado (si el panel
+    /// quedara vacío, se vuelve a pegar el original). Con dry_run sólo devuelve cómo quedaría. Luego project_save.
+    #[tool(annotations(destructive_hint = true, idempotent_hint = false, open_world_hint = false))]
+    async fn panel_edit(&self, Parameters(p): Parameters<PanelEditRequest>) -> ToolResult<PanelChangeResult> {
+        self.blocking(move |b| ops(b.panels(), Capability::PanelObjects, b)?.edit(&p)).await
+    }
+
+    /// Añade a un panel base objetos nuevos (`create`: switch, lamp, numeric_display, string_display, text, rectangle,
+    /// ellipse, line; colores RRGGBB; variables con su ruta completa, que tienen que existir), piezas de la Toolchest
+    /// (`toolchest`: id de toolchest_list) u objetos copiados de otro panel base del mismo target (`from_panel` +
+    /// `object`), con su esquina superior izquierda en x, y; opcionalmente con otro nombre, `animations`, `visibility`
+    /// y (salvo con `create`) sustituciones de texto o variables. Sin `name`, los nuevos se llaman como en Vijeo
+    /// (`Switch01`…). Devuelve los objetos del panel después y avisa si Vijeo cambió algún
+    /// nombre (no admite repetidos) o posición. Luego project_build (las piezas de la Toolchest llegan sin variables) y
+    /// project_save.
+    #[tool(annotations(destructive_hint = false, idempotent_hint = false, open_world_hint = false))]
+    async fn panel_insert(&self, Parameters(p): Parameters<PanelInsertRequest>) -> ToolResult<PanelChangeResult> {
+        self.blocking(move |b| ops(b.panels(), Capability::PanelObjects, b)?.insert(&p)).await
+    }
+
+    /// Toolchest de la instalación, sin abrir Vijeo: sin filtros, sus bibliotecas; con `library` o `text`, sus piezas
+    /// (id para panel_insert, nombre, tipos de objeto y tamaño).
+    #[tool(annotations(read_only_hint = true, open_world_hint = false))]
+    async fn toolchest_list(&self, Parameters(f): Parameters<ToolchestFilter>) -> ToolResult<ToolchestResult> {
+        self.blocking(move |b| ops(b.panels(), Capability::Toolchest, b)?.toolchest(&f)).await
     }
 
     /// Convierte con DataConverter.exe recetas (.rcp) y registros de datos (.dat) descargados del HMI a CSV/TXT, o un

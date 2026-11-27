@@ -106,6 +106,9 @@ pub trait Backend: Send + Sync {
     fn files(&self) -> Option<&dyn FileOps> {
         None
     }
+    fn panels(&self) -> Option<&dyn PanelOps> {
+        None
+    }
     /// Cierra todos los proyectos (sin guardar) y termina todas las instancias de Vijeo.
     fn shutdown(&self) -> VijeoResult<()>;
 }
@@ -187,6 +190,18 @@ pub trait FileOps: Send + Sync {
     fn variables_csv(&self, req: &VariableCsvRequest) -> VijeoResult<VariableCsvResult>;
     /// Convierte recetas o registros de datos con `DataConverter.exe`.
     fn convert_data(&self, req: &DataConvertRequest) -> VijeoResult<DataConvertResult>;
+}
+
+/// Objetos de los paneles base de un proyecto abierto (por el portapapeles de Vijeo) y piezas de la Toolchest.
+pub trait PanelOps: Send + Sync {
+    /// Objetos de un panel base, con sus grupos y lo que contienen.
+    fn objects(&self, p: ProjectId, target: &str, panel: &str) -> VijeoResult<PanelObjectsResult>;
+    /// Aplica operaciones (renombrar, mover, cambiar textos o variables, borrar) a los objetos de un panel base.
+    fn edit(&self, req: &PanelEditRequest) -> VijeoResult<PanelChangeResult>;
+    /// Añade a un panel base piezas de la Toolchest u objetos copiados de otro panel.
+    fn insert(&self, req: &PanelInsertRequest) -> VijeoResult<PanelChangeResult>;
+    /// Bibliotecas de la Toolchest de la instalación o, con filtro, sus piezas.
+    fn toolchest(&self, filter: &ToolchestFilter) -> VijeoResult<ToolchestResult>;
 }
 
 pub trait VariableOps: Send + Sync {

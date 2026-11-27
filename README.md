@@ -1,6 +1,6 @@
 # vijeo-mcp
 
-Servidor MCP (stdio, Rust + `rmcp` 3.8) para pilotar **Vijeo-Designer** como lo haría un usuario. Cada proyecto abierto es una instancia normal de Vijeo-Frame, que el MCP maneja con sus menús, asistentes, diálogos y Navigator. No usa la API COM (en modo SoMachine añadía un driver sin dirección a cada target). Sin ella, el MCP **ya no puede crear ni editar pantallas**: el import de XML era lo único que la usaba y no tiene vía alternativa (§12.11). Diseño en [docs/arquitectura.md](docs/arquitectura.md); base empírica en [docs/vijeo-designer-6.3-api-inventory.md](docs/vijeo-designer-6.3-api-inventory.md): §12.9 explica el problema de COM, §12.10 la instancia normal y §12.11 el import XML sin COM.
+Servidor MCP (stdio, Rust + `rmcp` 3.8) para pilotar **Vijeo-Designer** como lo haría un usuario. Cada proyecto abierto es una instancia normal de Vijeo-Frame, que el MCP maneja con sus menús, asistentes, diálogos y Navigator. No usa la API COM (en modo SoMachine añadía un driver sin dirección a cada target). Las pantallas se leen, editan y crean con el portapapeles de Vijeo, como Copiar/Pegar. La documentación de diseño y de ingeniería inversa se guarda aparte, en local (`docs/`, fuera del repositorio).
 
 ## Compilar
 
@@ -47,6 +47,25 @@ Qué modelos se pueden crear: la regla del catálogo supone la licencia estánda
 | `project_export_xml` | Export Project: escribe `<dir>\<proyecto>.vxml` (public.xsd) y la carpeta `<dir>\<proyecto>\` con las imágenes |
 | `variable_list`, `variable_lookup`, `project_cross_references` | Variables (nombre completo, tipo, origen, dirección, descripción), existencia de una variable y referencias cruzadas (dónde se usa cada una y cuáles no se usan), leídas del `.vxml` |
 | `panel_report`, `action_list` | Paneles con sus acciones de panel, y acciones globales (disparador, enclavamiento, script u operaciones), del `.vxml` |
+| `script_lint` | Revisa los scripts del proyecto (o un texto suelto) contra sus variables y la API de scripts: variables que no existen, mayúsculas, métodos, sintaxis. No compila |
+| `project_goto` | Abre un panel base en la ventana de Vijeo del proyecto (Navigator) |
+| `variables_import` | Variables › Import Variables en un target abierto: un CSV o una lista de variables (se genera el CSV). Las que ya existen se conservan salvo con `replace_existing`; el `.vdz` cambia con `project_save` |
+| `xml_validate` | Sin Vijeo: valida un `.vxml` contra el `public.xsd` de la instalación (con .NET `System.Xml`) |
+| `variables_generate_csv` | Sin Vijeo: escribe un CSV de variables en el formato de Export/Import Variables, rechazando palabras reservadas; con `project` avisa de nombres repetidos y grupos de escaneo desconocidos |
+| `data_convert` | Sin Vijeo: recetas `.rcp` y registros `.dat` a CSV, y CSV a `.rcp`, con `DataConverter.exe` |
+| `panel_objects` | Objetos de un panel base de un proyecto abierto: ruta (`Grupo/Objeto`), tipo, posición y tamaño absolutos, textos y variables, con lo que contiene cada grupo |
+| `panel_edit` | Edita los objetos de un panel base: renombrar, mover, redimensionar, cambiar un texto, sustituir texto o variables dentro de las cadenas, borrar, poner o quitar animaciones, cambiar las acciones de un botón y los colores. `dry_run` sólo devuelve cómo quedaría |
+| `panel_insert` | Crea objetos desde cero (botones con acciones, lámparas, displays numéricos y de texto, textos, rectángulos, elipses y líneas, con animaciones de visibilidad, parpadeo, color, relleno y posición) o añade piezas de la Toolchest u objetos copiados de otro panel, en la posición indicada, con otro nombre y sustituciones de texto o variables |
+| `toolchest_list` | Sin Vijeo: bibliotecas de la Toolchest de la instalación y, con filtro, sus piezas (id para `panel_insert`, tipos y tamaño) |
+
+`project_goto`, `variables_import` y las tres herramientas de objetos de panel no funcionan después de un `project_build` en la misma instancia (Vijeo deja de atender el Navigator): úsalos antes de compilar, o guarda, cierra y vuelve a abrir.
+
+Las herramientas de objetos trabajan como Copiar y Pegar en el editor del panel, con el portapapeles de Windows (inventario §13.2):
+- `panel_edit` comprueba las operaciones sobre una copia; luego corta todos los objetos del panel, los edita y los pega. Al final compara lo que quedó con lo esperado; si el panel quedara vacío, vuelve a pegar el original.
+- Vijeo vuelve a enlazar las variables por nombre al pegar y renumera los `ObjectID`.
+- Las piezas de la Toolchest llegan sin configurar, igual que si se arrastraran: `project_build` dice qué variables les faltan.
+- El texto que tuviera el portapapeles se devuelve al terminar; el resto de formatos se pierde.
+- Las piezas de `Image Library` y algunas plantillas antiguas no se pueden insertar.
 
 Cada proyecto abierto es una instancia de Vijeo-Frame que trabaja sobre una copia del `.vdz` en `Vijeo-Manager\MCP_TMP_<pid>_<n>`. El `.vdz` sólo cambia con `project_save` o con `target_config_set` (sin abrir Vijeo), y la copia se borra al cerrar el proyecto. Abrir tarda unos 10-30 s.
 

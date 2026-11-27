@@ -740,3 +740,574 @@ pub struct DataConvertResult {
     pub log: Vec<String>,
     pub duration_ms: u64,
 }
+
+// ---------------------------------------------------------------- objetos de los paneles
+
+/// Objeto de un panel (o de una pieza de la Toolchest), leído de su serialización binaria.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PanelObject {
+    /// Ruta para referirse a él en panel_edit: nombres de los grupos que lo contienen y el suyo, separados por `/`
+    /// (`GroupObject03/CmdFwdYellow`). Un nombre suelto vale si no se repite en el panel.
+    pub path: String,
+    pub name: String,
+    /// Tipo de objeto (clase COM de Vijeo): `Switch`, `Text`, `RoundRect` (rectángulo), `Group` (grupo o smart object)…
+    pub kind: String,
+    /// Posición y tamaño en píxeles, absolutos en el panel (el XML da los hijos de un grupo relativos al grupo).
+    pub left: i32,
+    pub top: i32,
+    pub width: i32,
+    pub height: i32,
+    /// Textos de los datos propios del objeto (etiquetas, nombre del idioma, fuentes…), sin las referencias a variables.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub strings: Vec<String>,
+    /// Variables a las que se refiere (nombre completo con carpetas).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub variables: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<PanelObject>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PanelObjectsResult {
+    pub target: String,
+    /// Ruta de panel_list (`BP:\...`).
+    pub panel: String,
+    /// Objetos contando los de dentro de los grupos.
+    pub count: usize,
+    pub objects: Vec<PanelObject>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+/// Una operación de panel_edit. `object` es una ruta de panel_objects (`Grupo/Objeto`) o un nombre que no se repita.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum PanelEditOp {
+    /// Cambia el nombre del objeto. Vijeo no admite nombres repetidos en un panel.
+    Rename { object: String, new_name: String },
+    /// Desplaza el objeto (y sus hijos, si es un grupo) `dx`, `dy` píxeles.
+    Move { object: String, dx: i32, dy: i32 },
+    /// Lleva la esquina superior izquierda del objeto a `x`, `y` (con sus hijos).
+    MoveTo { object: String, x: i32, y: i32 },
+    /// Cambia el tamaño manteniendo la esquina superior izquierda. No vale para grupos.
+    Resize { object: String, width: i32, height: i32 },
+    /// Sustituye un texto completo del objeto (una etiqueta, el texto de un Text) por otro. `old` tiene que ser
+    /// exactamente uno de los `strings` de panel_objects; los saltos de línea son `\n`.
+    SetText { object: String, old: String, new: String },
+    /// Sustituye `old` por `new` dentro de todas las cadenas del objeto (o de todo el panel sin `object`), incluidas
+    /// las referencias a variables: así se cambia la variable de un objeto (`xCmdFwd` → `xCmdRev`). Vijeo vuelve a
+    /// enlazar las variables por nombre al pegar.
+    Replace {
+        #[serde(default)]
+        object: Option<String>,
+        old: String,
+        new: String,
+    },
+    /// Borra el objeto (con sus hijos, si es un grupo). No puede dejar un grupo vacío.
+    Delete { object: String },
+    /// Añade animaciones al objeto o sustituye las que ya tenga de la misma clase.
+    Animate { object: String, animations: Vec<AnimationSpec> },
+    /// Quita animaciones del objeto: las de `kinds` o, sin `kinds`, todas.
+    RemoveAnimations {
+        object: String,
+        #[serde(default)]
+        kinds: Vec<AnimationKind>,
+    },
+    /// Sustituye las acciones de un botón (Switch). Las listas que no se indican no cambian.
+    SetActions {
+        object: String,
+        #[serde(default)]
+        on_touch: Option<Vec<SwitchAction>>,
+        #[serde(default)]
+        on_release: Option<Vec<SwitchAction>>,
+        #[serde(default)]
+        while_pressed: Option<Vec<SwitchAction>>,
+    },
+    /// Cambia los colores de un objeto (`RRGGBB`; `none` = transparente). Según el tipo: Rectangle y Circle
+    /// (`fill`, `line`), Line (`line`), Text (`text`, `fill` = fondo, `line` = borde), Switch y Lamp (`on`, `off`,
+    /// `text`), DataDisplay (`fill` = placa, `text`).
+    SetColors {
+        object: String,
+        #[serde(default)]
+        fill: Option<String>,
+        #[serde(default)]
+        line: Option<String>,
+        #[serde(default)]
+        text: Option<String>,
+        #[serde(default)]
+        on: Option<String>,
+        #[serde(default)]
+        off: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct PanelEditRequest {
+    pub project: ProjectId,
+    pub target: String,
+    /// Panel base: ruta de panel_list (`BP:\Carpeta\Panel`), ruta sin `BP:\` o sólo el nombre si no se repite.
+    pub panel: String,
+    /// Operaciones, en orden.
+    pub operations: Vec<PanelEditOp>,
+    /// Sólo comprobar: copia los objetos, aplica las operaciones y devuelve el resultado sin tocar el panel.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// Sustitución dentro de las cadenas de un objeto insertado (etiquetas, textos, variables).
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct TextReplace {
+    pub old: String,
+    pub new: String,
+}
+
+/// Acción de un botón. Las variables van con su ruta completa (`Carpeta.Variable`) y tienen que existir en el
+/// proyecto: Vijeo las enlaza por nombre al pegar.
+#[derive(Debug, Clone, Deserialize, JsonSchema, PartialEq)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SwitchAction {
+    /// Pone a 1 una variable booleana.
+    Set { variable: String },
+    /// Pone a 0 una variable booleana.
+    Reset { variable: String },
+    /// Invierte una variable booleana.
+    Toggle { variable: String },
+    /// 1 mientras se pulsa, 0 al soltar.
+    MomentaryOn { variable: String },
+    /// 0 mientras se pulsa, 1 al soltar.
+    MomentaryOff { variable: String },
+    /// Escribe `value` (un número o el nombre de otra variable) en una variable numérica.
+    WordSet { variable: String, value: String },
+    /// Suma `value` a una variable numérica.
+    WordAdd { variable: String, value: String },
+    /// Resta `value` a una variable numérica.
+    WordSubtract { variable: String, value: String },
+    /// Cambia al panel base `panel` (como en project_goto).
+    ChangePanel { panel: String },
+    /// Vuelve al panel anterior.
+    PreviousPanel,
+}
+
+/// Fuente de un texto o una etiqueta: las fuentes de mapa de bits de Vijeo (GP).
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FontSize {
+    /// GPFontModern6x10.
+    #[default]
+    Small,
+    /// GPFontModern8x13.
+    Medium,
+    /// GPFontModern13x23.
+    Large,
+}
+
+/// Alineación horizontal de un texto o una etiqueta.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HAlign {
+    Left,
+    Center,
+    Right,
+}
+
+/// Objeto nuevo que crea panel_insert desde cero. Los colores son `RRGGBB` en hexadecimal (`00FF00`).
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NewObject {
+    /// Botón (Switch). Tamaño por defecto 58×18.
+    Switch {
+        /// Texto del botón (`\n` para partir en varias líneas).
+        label: String,
+        /// Acciones al tocar, en orden.
+        #[serde(default)]
+        on_touch: Vec<SwitchAction>,
+        /// Acciones al soltar.
+        #[serde(default)]
+        on_release: Vec<SwitchAction>,
+        /// Acciones que se repiten mientras está pulsado.
+        #[serde(default)]
+        while_pressed: Vec<SwitchAction>,
+        /// Variable booleana que enciende la lámpara del botón (color `on_color`).
+        #[serde(default)]
+        lamp: Option<String>,
+        /// Variable booleana que tiene que estar a 1 para que el botón responda (enclavamiento).
+        #[serde(default)]
+        interlock: Option<String>,
+        /// Color del botón encendido (lámpara a 1); por defecto `00FF00`.
+        #[serde(default)]
+        on_color: Option<String>,
+        /// Color del botón apagado; por defecto `C0C0C0`.
+        #[serde(default)]
+        off_color: Option<String>,
+        /// Color del texto; por defecto `626469`.
+        #[serde(default)]
+        text_color: Option<String>,
+        #[serde(default)]
+        font: FontSize,
+        #[serde(default)]
+        bold: bool,
+        /// Estilo de dibujo de Vijeo (fichero de `NativeStyles\Primitive`, p.ej. `Square03`, `Round01`).
+        #[serde(default)]
+        style: Option<String>,
+        /// Pitido al tocar.
+        #[serde(default)]
+        buzzer: bool,
+    },
+    /// Lámpara (Lamp) de una variable booleana: `on_color` con 1, `off_color` con 0. Tamaño por defecto 40×20.
+    Lamp {
+        variable: String,
+        /// Texto fijo sobre la lámpara; o bien `on_label`/`off_label`, uno por estado.
+        #[serde(default)]
+        label: Option<String>,
+        #[serde(default)]
+        on_label: Option<String>,
+        #[serde(default)]
+        off_label: Option<String>,
+        /// Por defecto `00FF00`.
+        #[serde(default)]
+        on_color: Option<String>,
+        /// Por defecto `C0C0C0`.
+        #[serde(default)]
+        off_color: Option<String>,
+        /// Color del texto; por defecto `000000`.
+        #[serde(default)]
+        text_color: Option<String>,
+        #[serde(default)]
+        font: FontSize,
+        #[serde(default)]
+        bold: bool,
+        /// Forma: `blank_area` (rectángulo, por defecto), `square` o `round` (piloto redondo, sin texto).
+        #[serde(default)]
+        shape: LampShape,
+    },
+    /// Display numérico (NumericDisplay) de una variable entera o real, con entrada por teclado opcional.
+    /// Tamaño por defecto 60×20.
+    NumericDisplay {
+        variable: String,
+        /// Variable real (Float): formato fijo con `decimals` decimales. Si no, entero.
+        #[serde(default)]
+        float: bool,
+        /// Cifras enteras (por defecto 5).
+        #[serde(default)]
+        digits: Option<u16>,
+        /// Decimales (por defecto 0; 2 si `float`).
+        #[serde(default)]
+        decimals: Option<u16>,
+        /// El operador puede escribir el valor (teclado emergente).
+        #[serde(default)]
+        input: bool,
+        /// Con `input`: límites (un número o el nombre de una variable).
+        #[serde(default)]
+        min: Option<String>,
+        #[serde(default)]
+        max: Option<String>,
+        /// Color de la placa; por defecto `B0B0B0`.
+        #[serde(default)]
+        plate_color: Option<String>,
+        /// Color del texto; por defecto `000000`.
+        #[serde(default)]
+        text_color: Option<String>,
+        #[serde(default)]
+        font: FontSize,
+        #[serde(default)]
+        bold: bool,
+        /// Por defecto `center`.
+        #[serde(default)]
+        align: Option<HAlign>,
+    },
+    /// Display de texto (StringDisplay) de una variable de tipo string. Tamaño por defecto 100×20.
+    StringDisplay {
+        variable: String,
+        /// Caracteres que muestra (por defecto 10).
+        #[serde(default)]
+        length: Option<u16>,
+        #[serde(default)]
+        input: bool,
+        /// Color de la placa; por defecto `B0B0B0`.
+        #[serde(default)]
+        plate_color: Option<String>,
+        /// Color del texto; por defecto `000000`.
+        #[serde(default)]
+        text_color: Option<String>,
+        #[serde(default)]
+        font: FontSize,
+        #[serde(default)]
+        bold: bool,
+        /// Por defecto `center`.
+        #[serde(default)]
+        align: Option<HAlign>,
+    },
+    /// Texto fijo (Text). Tamaño por defecto: el del texto con su fuente.
+    Text {
+        /// `\n` para partir en varias líneas.
+        text: String,
+        /// Por defecto `000000`.
+        #[serde(default)]
+        color: Option<String>,
+        /// Fondo; sin él, transparente.
+        #[serde(default)]
+        background: Option<String>,
+        /// Borde; sin él, sin borde.
+        #[serde(default)]
+        border: Option<String>,
+        #[serde(default)]
+        font: FontSize,
+        #[serde(default)]
+        bold: bool,
+        /// Por defecto `left`.
+        #[serde(default)]
+        align: Option<HAlign>,
+    },
+    /// Rectángulo. Tamaño por defecto 60×40.
+    Rectangle {
+        /// Relleno; `none` = transparente. Por defecto `9FA0A4`.
+        #[serde(default)]
+        fill: Option<String>,
+        /// Borde; `none` = sin borde. Por defecto `009530`.
+        #[serde(default)]
+        line: Option<String>,
+        /// Ancho del borde en px (por defecto 2).
+        #[serde(default)]
+        line_width: Option<u16>,
+        /// Radio de las esquinas en px (0 = esquinas rectas; por defecto 3).
+        #[serde(default)]
+        corner: Option<u16>,
+    },
+    /// Elipse (círculo si `width` = `height`). Tamaño por defecto 30×30.
+    Ellipse {
+        /// Relleno; `none` = transparente. Por defecto `FF8000`.
+        #[serde(default)]
+        fill: Option<String>,
+        /// Borde; `none` = sin borde. Por defecto `FFFFFF`.
+        #[serde(default)]
+        line: Option<String>,
+        #[serde(default)]
+        line_width: Option<u16>,
+    },
+    /// Línea de (`x`, `y`) a (`end_x`, `end_y`), en coordenadas del panel (sin `width`/`height`).
+    Line {
+        end_x: i32,
+        end_y: i32,
+        /// Por defecto `009431`.
+        #[serde(default)]
+        color: Option<String>,
+        /// Por defecto 2.
+        #[serde(default)]
+        width: Option<u16>,
+        /// Flechas: `none` (por defecto), `start`, `end` o `both`.
+        #[serde(default)]
+        arrows: Option<Arrows>,
+    },
+}
+
+/// Forma de una lámpara (estilo de dibujo de Vijeo).
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LampShape {
+    /// Rectángulo con texto («BlankArea»).
+    #[default]
+    BlankArea,
+    /// Cuadrado con relieve y texto («Square70»).
+    Square,
+    /// Piloto redondo, sin texto («Round04»).
+    Round,
+}
+
+/// Flechas de una línea.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Arrows {
+    None,
+    Start,
+    End,
+    Both,
+}
+
+/// Qué color cambia una animación de color.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ColorPart {
+    /// Relleno (en un Text, el color del texto).
+    #[default]
+    Fill,
+    /// Borde o línea.
+    Line,
+    /// Fondo (el del patrón; en un Text, el del cuadro).
+    Background,
+}
+
+/// Animación de un objeto (las de la pestaña Animación de Vijeo). Las variables van con su ruta completa
+/// (`Carpeta.Variable`). Un objeto tiene como mucho una animación de cada clase: `visibility` y `blink`
+/// comparten la de visibilidad.
+#[derive(Debug, Clone, Deserialize, JsonSchema, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AnimationSpec {
+    /// Visible mientras la variable booleana valga 1 (o 0 con `invert`).
+    Visibility {
+        variable: String,
+        #[serde(default)]
+        invert: bool,
+    },
+    /// Parpadea mientras la variable booleana valga 1.
+    Blink {
+        variable: String,
+        #[serde(default)]
+        fast: bool,
+    },
+    /// Cambia un color según una variable booleana: `on_color` con 1, `off_color` con 0 (`RRGGBB`; `none` =
+    /// transparente).
+    Color {
+        variable: String,
+        on_color: String,
+        off_color: String,
+        #[serde(default)]
+        part: ColorPart,
+    },
+    /// Rellena el objeto según el valor de una variable: `min` vacío, `max` lleno.
+    Fill {
+        variable: String,
+        min: f64,
+        max: f64,
+        /// `up` (desde abajo, por defecto) o `right` (desde la izquierda).
+        #[serde(default)]
+        direction: FillDirection,
+    },
+    /// Desplaza el objeto según el valor de una variable: con `min` está en su sitio y con `max`, `dx`, `dy`
+    /// píxeles más allá.
+    Position {
+        variable: String,
+        min: f64,
+        max: f64,
+        #[serde(default)]
+        dx: i32,
+        #[serde(default)]
+        dy: i32,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FillDirection {
+    #[default]
+    Up,
+    Right,
+}
+
+/// Clase de animación (para quitarlas con panel_edit).
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AnimationKind {
+    Visibility,
+    Color,
+    Fill,
+    Position,
+    Size,
+    Rotate,
+    Value,
+}
+
+/// Objeto que inserta panel_insert: una pieza de la Toolchest, un objeto de otro panel base del mismo target o
+/// un objeto nuevo (`create`).
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct PanelInsertItem {
+    /// Objeto nuevo, creado desde cero.
+    #[serde(default)]
+    pub create: Option<NewObject>,
+    /// Con `create`: tamaño (por defecto, el propio de cada tipo).
+    #[serde(default)]
+    pub width: Option<i32>,
+    #[serde(default)]
+    pub height: Option<i32>,
+    /// Variable booleana que muestra el objeto (oculto con 0). En los botones va en el propio botón; en el resto,
+    /// como animación de visibilidad.
+    #[serde(default)]
+    pub visibility: Option<String>,
+    /// Animaciones del objeto insertado (sustituyen a las que traiga de la misma clase).
+    #[serde(default)]
+    pub animations: Vec<AnimationSpec>,
+    /// Pieza de la Toolchest: `id` de toolchest_list (`Biblioteca\PartNNN`) o `Biblioteca\<nombre del objeto>`.
+    #[serde(default)]
+    pub toolchest: Option<String>,
+    /// O bien un panel base del mismo target (como en project_goto) del que se copia `object`.
+    #[serde(default)]
+    pub from_panel: Option<String>,
+    /// Con `from_panel`: ruta del objeto en ese panel (panel_objects).
+    #[serde(default)]
+    pub object: Option<String>,
+    /// Esquina superior izquierda en el panel de destino.
+    pub x: i32,
+    pub y: i32,
+    /// Nombre del objeto insertado (si ya existe en el panel, Vijeo le pone otro).
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Sustituciones en sus cadenas (como `replace` de panel_edit), p.ej. para cambiar la variable de un Switch.
+    #[serde(default)]
+    pub replace: Vec<TextReplace>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct PanelInsertRequest {
+    pub project: ProjectId,
+    pub target: String,
+    /// Panel base de destino (como en project_goto).
+    pub panel: String,
+    pub items: Vec<PanelInsertItem>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PanelChangeResult {
+    pub target: String,
+    pub panel: String,
+    /// Se aplicó (false con `dry_run`).
+    pub applied: bool,
+    /// Lo que se hizo, en orden.
+    pub changes: Vec<String>,
+    /// Objetos del panel después (con `dry_run`, como quedarían).
+    pub objects: Vec<PanelObject>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+/// Pieza de la Toolchest de la instalación.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ToolchestPart {
+    /// Para panel_insert: `Biblioteca\PartNNN`.
+    pub id: String,
+    /// Carpeta de la biblioteca dentro de `Toolchest` (`Graph\BarGraph\Vertical`).
+    pub library: String,
+    /// Nombre de los objetos de nivel superior de la pieza.
+    pub name: String,
+    /// Tipos de objeto que contiene (sin repetir).
+    pub kinds: Vec<String>,
+    pub width: i32,
+    pub height: i32,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ToolchestLibrary {
+    pub library: String,
+    pub parts: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema, Default)]
+pub struct ToolchestFilter {
+    /// Sólo las bibliotecas cuya carpeta contiene este texto (sin distinguir mayúsculas). Sin `library` ni `text`
+    /// se listan las bibliotecas, no las piezas.
+    #[serde(default)]
+    pub library: Option<String>,
+    /// Sólo las piezas cuyo nombre, tipo o biblioteca contiene este texto.
+    #[serde(default)]
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ToolchestResult {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub libraries: Vec<ToolchestLibrary>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<ToolchestPart>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}

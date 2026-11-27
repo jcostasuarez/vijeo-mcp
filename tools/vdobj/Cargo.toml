@@ -1,0 +1,9 @@
+[package]
+name = "vdobj"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cfb = "0.10"
+
+[workspace]

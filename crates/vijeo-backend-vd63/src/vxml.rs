@@ -75,6 +75,32 @@ pub fn variables(t: Node) -> Vec<VariableInfo> {
     out
 }
 
+/// Nombres que se pueden usar como variable en un objeto: las variables del target y los miembros de las
+/// estructuradas (`Var.miembro`), tanto los que van dentro de la variable como los de su tipo en `<DataTypes>`.
+pub fn variable_names(t: Node) -> Vec<String> {
+    let mut structs: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let root = t.ancestors().find(|a| a.has_tag_name("Project"));
+    if let Some(dt) = root.and_then(|r| child(r, "DataTypes")) {
+        for s in elements(dt).filter(|s| s.has_tag_name("StructureType")) {
+            let members = elements(s).filter(|e| e.has_tag_name("StructureElement")).filter_map(|e| attr(e, "Name")).collect();
+            if let Some(n) = attr(s, "Name") {
+                structs.insert(n, members);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for v in variables(t) {
+        if let Some(ms) = v.extra.get("Members") {
+            out.extend(ms.split(", ").map(|m| format!("{}.{m}", v.name)));
+        }
+        if let Some(ms) = structs.get(&v.data_type) {
+            out.extend(ms.iter().map(|m| format!("{}.{m}", v.name)));
+        }
+        out.push(v.name);
+    }
+    out
+}
+
 fn collect_variables(n: Node, prefix: &str, target: &str, out: &mut Vec<VariableInfo>) {
     for c in elements(n) {
         let Some(name) = attr(c, "Name") else { continue };
@@ -221,6 +247,35 @@ fn collect_panels<'a, 'i>(n: Node<'a, 'i>, tag: &str, prefix: &str, f: &mut dyn 
             f(&path, c);
         }
     }
+}
+
+/// Panel con su id interno (`ID="P2"` en el XML), que es lo que guardan las acciones Change Panel y las de las
+/// ventanas emergentes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PanelId {
+    /// `Base Panels`, `Master Panels` o `Popup Windows`.
+    pub group: String,
+    /// Ruta dentro del grupo (`Carpeta\Panel`).
+    pub path: String,
+    pub name: String,
+    /// `P2`, `P10001`…
+    pub id: String,
+}
+
+/// Paneles base, maestros y ventanas emergentes con su id.
+pub fn panel_ids(t: Node) -> Vec<PanelId> {
+    let mut out = Vec::new();
+    let Some(gp) = child(t, "GraphicalPanels") else { return out };
+    for (holder, tag, group, _) in PANEL_GROUPS {
+        if let Some(h) = child(gp, holder) {
+            collect_panels(h, tag, "", &mut |path, p| {
+                if let Some(id) = attr(p, "ID") {
+                    out.push(PanelId { group: group.to_owned(), path: path.to_owned(), name: attr(p, "Name").unwrap_or_default(), id });
+                }
+            });
+        }
+    }
+    out
 }
 
 /// Rutas de los paneles base (`BP:\Panel`, `BP:\Carpeta\Panel`).

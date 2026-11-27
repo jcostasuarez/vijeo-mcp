@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, TryLockError};
+use std::sync::{Arc, Mutex, OnceLock, TryLockError};
 use std::time::{Duration, Instant, SystemTime};
 
 use vijeo_core::*;
@@ -17,7 +17,7 @@ use vijeo_ui::process;
 
 use crate::catalog::{split_hmi_type, Catalog};
 use crate::ui_project::{self, NewTarget, Timeouts, UiProject};
-use crate::{dataconv, drivers, feedback, lint, probe, reports, swx, validate, varcsv, vdz, vxml, xsd};
+use crate::{dataconv, drivers, feedback, lint, objects, panel_ops, probe, reports, swx, toolchest, validate, varcsv, vdz, vxml, xsd};
 
 /// Esquema público del XML de proyecto, relativo a `Vijeo-Frame`.
 const PUBLIC_XSD: &str = r"XML\public.xsd";
@@ -108,6 +108,8 @@ pub struct Vd63Backend {
     /// Un arranque a la vez: varias instancias arrancando a la vez se estorban (diálogos, `Vijeo-Manager`).
     launching: Mutex<()>,
     next_id: AtomicU32,
+    /// Bibliotecas de la Toolchest (se leen la primera vez que hacen falta).
+    toolchest: OnceLock<Vec<toolchest::Library>>,
 }
 
 /// `%PUBLIC%\Documents\Vijeo-Designer <x.y>\Vijeo-Manager`: proyectos reales del usuario.
@@ -218,6 +220,8 @@ impl Vd63Backend {
             Capability::ScriptLint,
             Capability::PanelOpen,
             Capability::VariableImport,
+            // Formato binario de los objetos y comandos del editor verificados con 6.3 (inventario §13.2).
+            Capability::PanelObjects,
         ] {
             caps = gate(caps, cap);
         }
@@ -242,6 +246,12 @@ impl Vd63Backend {
         }
         // Se lee del .vdz, sin Vijeo: no depende de que la versión esté verificada.
         caps = caps.supported(Capability::ProjectConfig);
+        // Las piezas usan el formato de objetos de 6.3: sólo con esa versión.
+        caps = if !toolchest::root(&inst.frame_dir).is_dir() {
+            caps.unsupported(Capability::Toolchest, "no está la carpeta Toolchest en la instalación")
+        } else {
+            gate(caps, Capability::Toolchest)
+        };
         let drivers = drivers::load(&inst.frame_dir);
         caps = match &drivers {
             Ok(d) if !d.is_empty() => caps.supported(Capability::DriverCatalog),
@@ -261,6 +271,7 @@ impl Vd63Backend {
             pool: Mutex::new(Pool::default()),
             launching: Mutex::new(()),
             next_id: AtomicU32::new(1),
+            toolchest: OnceLock::new(),
         })
     }
 
@@ -642,6 +653,9 @@ impl Backend for Vd63Backend {
     fn files(&self) -> Option<&dyn FileOps> {
         Some(self)
     }
+    fn panels(&self) -> Option<&dyn PanelOps> {
+        Some(self)
+    }
 
     fn shutdown(&self) -> VijeoResult<()> {
         let all: Vec<Arc<Instance>> = std::mem::take(&mut self.pool.lock().unwrap().map).into_values().collect();
@@ -811,9 +825,56 @@ impl TargetOps for Vd63Backend {
 
     fn open_panel(&self, p: ProjectId, target: &str, panel: &str) -> VijeoResult<PanelRef> {
         self.require(Capability::PanelOpen)?;
+        let (inst, t, found) = self.resolve_panel(p, target, panel, "panel")?;
+        let path = panel_path(&found);
+        inst.with_ui("abrir el panel", |u| u.open_panel(&t, &path))?;
+        Ok(found)
+    }
+}
+
+/// Ruta de un panel base sin `BP:\` (`Carpeta\Panel`), como la usa el Navigator.
+fn panel_path(r: &PanelRef) -> String {
+    r.path.trim_start_matches("BP:\\").to_owned()
+}
+
+/// Número de un panel base para «cambiar de panel» (`P2` → `2`), buscado por ruta (`Carpeta\Panel`) o nombre.
+fn find_base_panel(ids: &[vxml::PanelId], want: &str) -> Result<String, String> {
+    let w = want.trim().trim_start_matches("BP:").trim_start_matches("bp:").trim_matches('\\');
+    let base: Vec<&vxml::PanelId> = ids.iter().filter(|p| p.group == "Base Panels").collect();
+    let hit = base.iter().find(|p| p.path.eq_ignore_ascii_case(w)).copied().or_else(|| {
+        let by_name: Vec<&&vxml::PanelId> = base.iter().filter(|p| p.name.eq_ignore_ascii_case(w)).collect();
+        (by_name.len() == 1).then(|| *by_name[0])
+    });
+    match hit {
+        Some(p) => p.id.strip_prefix('P').map(str::to_owned).ok_or_else(|| format!("id de panel inesperado «{}»", p.id)),
+        None => Err(format!(
+            "«{want}» no es un panel base (hay: {})",
+            base.iter().map(|p| p.path.as_str()).collect::<Vec<_>>().join(", ")
+        )),
+    }
+}
+
+fn uses_change_panel(l: &[SwitchAction]) -> bool {
+    l.iter().any(|a| matches!(a, SwitchAction::ChangePanel { .. }))
+}
+
+/// El portapapeles es uno para todo el sistema: una operación de objetos a la vez.
+static CLIPBOARD: Mutex<()> = Mutex::new(());
+
+fn clip_error(e: String) -> VijeoError {
+    VijeoError::Internal(format!("no se entendió el contenido del portapapeles de Vijeo: {e}"))
+}
+
+fn read_clip(raw: Option<Vec<u8>>) -> VijeoResult<Option<objects::Clip>> {
+    raw.map(|b| objects::Clip::from_bytes(&b).map_err(clip_error)).transpose()
+}
+
+impl Vd63Backend {
+    /// Proyecto, nombre real del target y panel base (buscado en el XML para dar un error claro y usar las
+    /// mayúsculas reales). `field` es el argumento que da el panel, para el error.
+    fn resolve_panel(&self, p: ProjectId, target: &str, panel: &str, field: &str) -> VijeoResult<(Arc<Instance>, String, PanelRef)> {
         let inst = self.get(p)?;
         let t = select_target(self.targets_of(&inst)?, Some(target))?.remove(0);
-        // Se busca en el XML para dar un error claro y usar las mayúsculas reales.
         let want = panel.trim().trim_start_matches("BP:").trim_start_matches("bp:").trim_matches('\\').to_lowercase();
         let panels = self.from_vxml(p, Some(&t.name), vxml::base_panel_refs)?;
         let found = panels.iter().find(|r| r.path.trim_start_matches("BP:\\").eq_ignore_ascii_case(&want)).or_else(|| {
@@ -823,11 +884,309 @@ impl TargetOps for Vd63Backend {
         });
         let Some(found) = found.cloned() else {
             let all: Vec<&str> = panels.iter().map(|r| r.path.as_str()).collect();
-            return Err(VijeoError::invalid("panel", format!("«{panel}» no es un panel base de «{}» (hay: {})", t.name, all.join(", "))));
+            return Err(VijeoError::invalid(field, format!("«{panel}» no es un panel base de «{}» (hay: {})", t.name, all.join(", "))));
         };
-        let path = found.path.trim_start_matches("BP:\\").to_owned();
-        inst.with_ui("abrir el panel", |u| u.open_panel(&t.name, &path))?;
-        Ok(found)
+        Ok((inst, t.name, found))
+    }
+
+    /// Comprueba en el XML del proyecto que existen `vars` y devuelve los paneles (para «cambiar de panel») si
+    /// `need_panels`. Sin nada que comprobar no exporta el XML.
+    fn object_context(&self, p: ProjectId, target: &str, vars: &[String], need_panels: bool) -> VijeoResult<Vec<vxml::PanelId>> {
+        // Las variables del sistema (`_CurPanelID`…) no salen en el XML.
+        let vars: Vec<&String> = vars.iter().filter(|v| !v.starts_with('_')).collect();
+        if !vars.is_empty() {
+            let known = self.from_vxml(p, Some(target), vxml::variable_names)?;
+            // Los índices de matriz (`Var[3]`) no se comprueban.
+            let exists = |v: &str| known.iter().any(|k| *k == v.split('[').next().unwrap_or(v));
+            let missing: Vec<String> = vars
+                .iter()
+                .filter(|v| !exists(v))
+                .map(|v| match known.iter().find(|k| k.eq_ignore_ascii_case(v)) {
+                    Some(k) => format!("{v} (¿{k}?)"),
+                    None => v.to_string(),
+                })
+                .collect();
+            if !missing.is_empty() {
+                return Err(VijeoError::invalid("variables", format!("no existen en «{target}»: {} (variable_list las lista)", missing.join(", "))));
+            }
+        }
+        if need_panels {
+            self.from_vxml(p, Some(target), vxml::panel_ids)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    fn toolchest_libs(&self) -> VijeoResult<&[toolchest::Library]> {
+        self.require(Capability::Toolchest)?;
+        Ok(self.toolchest.get_or_init(|| toolchest::libraries(&self.inst.frame_dir)))
+    }
+}
+
+/// Lo que Vijeo desplaza cada Paste respecto al anterior después de un Copy (verificado en vivo: +5, +10…;
+/// tras un Cut, el primer Paste no se desplaza).
+const PASTE_STEP: i32 = 5;
+
+/// Piezas como mucho en una respuesta de toolchest_list.
+const MAX_TOOLCHEST_PARTS: usize = 300;
+
+impl PanelOps for Vd63Backend {
+    fn objects(&self, p: ProjectId, target: &str, panel: &str) -> VijeoResult<PanelObjectsResult> {
+        self.require(Capability::PanelObjects)?;
+        let (inst, t, found) = self.resolve_panel(p, target, panel, "panel")?;
+        let path = panel_path(&found);
+        let _one = CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner());
+        let mut backup = vijeo_ui::clipboard::TextBackup::take();
+        let raw = inst.with_ui("copiar los objetos del panel", |u| u.copy_objects(&t, &path, false));
+        backup.restore();
+        let objects = read_clip(raw?)?.map(|c| panel_ops::to_objects(&c)).unwrap_or_default();
+        let mut notes = Vec::new();
+        if objects.is_empty() {
+            notes.push("el panel no tiene objetos".into());
+        }
+        Ok(PanelObjectsResult { target: t, panel: found.path, count: panel_ops::count(&objects), objects, notes })
+    }
+
+    fn edit(&self, req: &PanelEditRequest) -> VijeoResult<PanelChangeResult> {
+        self.require(Capability::PanelObjects)?;
+        if req.operations.is_empty() {
+            return Err(VijeoError::invalid("operations", "no hay ninguna operación"));
+        }
+        let (inst, t, found) = self.resolve_panel(req.project, &req.target, &req.panel, "panel")?;
+        let path = panel_path(&found);
+        let need_panels = req.operations.iter().any(|op| match op {
+            PanelEditOp::SetActions { on_touch, on_release, while_pressed, .. } => {
+                [on_touch, on_release, while_pressed].into_iter().flatten().any(|l| uses_change_panel(l))
+            }
+            _ => false,
+        });
+        let ids = self.object_context(req.project, &t, &panel_ops::edit_variables(&req.operations), need_panels)?;
+        let lookup = |p: &str| find_base_panel(&ids, p);
+        let _one = CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner());
+        let mut backup = vijeo_ui::clipboard::TextBackup::take();
+        let mut touched = false;
+        let r = inst.with_ui("editar los objetos del panel", |u| {
+            // 1. Copiar y aplicar las operaciones sin tocar el panel: si alguna no vale, no cambia nada.
+            let mut check = read_clip(u.copy_objects(&t, &path, false)?)?.ok_or_else(|| VijeoError::invalid("panel", "el panel no tiene objetos"))?;
+            let changes = panel_ops::apply(&mut check, &req.operations, &lookup)?;
+            if req.dry_run {
+                return Ok((false, changes, panel_ops::to_objects(&check), Vec::new()));
+            }
+            // 2. Cortar todo, aplicar las operaciones a lo cortado y pegarlo.
+            touched = true;
+            let cut = u.copy_objects(&t, &path, true)?.ok_or_else(|| VijeoError::Internal("Vijeo no cortó los objetos del panel".into()))?;
+            let original = objects::Clip::from_bytes(&cut).map_err(clip_error)?;
+            let mut edited = original.clone();
+            if let Err(e) = panel_ops::apply(&mut edited, &req.operations, &lookup) {
+                u.paste_objects(&cut)?;
+                return Err(e);
+            }
+            let pasted = edited.to_cfb().map_err(clip_error).and_then(|b| u.paste_objects(&b));
+            // 3. Comprobar lo que quedó; si el panel quedó vacío, se vuelve a pegar el original.
+            let after = u.copy_objects(&t, &path, false)?;
+            let Some(after) = read_clip(after)? else {
+                u.paste_objects(&cut)?;
+                return Err(pasted.err().unwrap_or_else(|| VijeoError::Internal("Vijeo no pegó los objetos editados: se volvió a pegar el contenido original del panel".into())));
+            };
+            pasted?;
+            let warnings = panel_ops::differences(&edited.objects, &after.objects);
+            u.save()?;
+            Ok((true, changes, panel_ops::to_objects(&after), warnings))
+        });
+        if touched {
+            inst.mark_unsaved();
+        }
+        backup.restore();
+        let (applied, changes, objects, warnings) = r?;
+        let mut notes = Vec::new();
+        if applied {
+            notes.push("Vijeo renumera los ObjectID de los objetos del panel al pegarlos".into());
+            notes.push("el proyecto queda con cambios sin guardar en el .vdz: project_save para conservarlos".into());
+        }
+        Ok(PanelChangeResult { target: t, panel: found.path, applied, changes, objects, warnings, notes })
+    }
+
+    fn insert(&self, req: &PanelInsertRequest) -> VijeoResult<PanelChangeResult> {
+        self.require(Capability::PanelObjects)?;
+        if req.items.is_empty() {
+            return Err(VijeoError::invalid("items", "no hay nada que insertar"));
+        }
+        let (inst, t, found) = self.resolve_panel(req.project, &req.target, &req.panel, "panel")?;
+        let path = panel_path(&found);
+        // Lo que no necesita Vijeo se resuelve antes: piezas de la Toolchest y rutas de los paneles de origen.
+        enum Source {
+            Part(String, objects::Clip),
+            Panel(String, String),
+            New,
+        }
+        let mut sources = Vec::new();
+        let mut vars = Vec::new();
+        let mut need_panels = false;
+        for (i, item) in req.items.iter().enumerate() {
+            let field = format!("items[{i}]");
+            vars.extend(panel_ops::insert_variables(item));
+            let s = match (&item.create, &item.toolchest, &item.from_panel, &item.object) {
+                (Some(o), None, None, None) => {
+                    if let NewObject::Switch { on_touch, on_release, while_pressed, .. } = o {
+                        need_panels |= uses_change_panel(on_touch) || uses_change_panel(on_release) || uses_change_panel(while_pressed);
+                    }
+                    Source::New
+                }
+                (None, Some(id), None, None) => {
+                    let (d, clip) = toolchest::find(self.toolchest_libs()?, id).map_err(|e| VijeoError::invalid(&field, e))?;
+                    Source::Part(d.id, clip)
+                }
+                (None, None, Some(panel), Some(object)) => {
+                    let (_, _, src) = self.resolve_panel(req.project, &t, panel, &format!("{field}.from_panel"))?;
+                    Source::Panel(panel_path(&src), object.clone())
+                }
+                _ => return Err(VijeoError::invalid(&field, "indica `create`, `toolchest`, o `from_panel` y `object`")),
+            };
+            if item.create.is_none() && (item.width.is_some() || item.height.is_some()) {
+                return Err(VijeoError::invalid(&field, "`width` y `height` sólo valen con `create`"));
+            }
+            sources.push(s);
+        }
+        let ids = self.object_context(req.project, &t, &vars, need_panels)?;
+        let lookup = |p: &str| find_base_panel(&ids, p);
+        let _one = CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner());
+        let mut backup = vijeo_ui::clipboard::TextBackup::take();
+        let mut touched = false;
+        let r = inst.with_ui("insertar objetos en el panel", |u| {
+            let mut slots: Vec<Option<objects::Clip>> = Vec::new();
+            let mut changes: Vec<Option<String>> = Vec::new();
+            let mut copied: Vec<(String, objects::Clip)> = Vec::new();
+            for (i, (item, src)) in req.items.iter().zip(sources).enumerate() {
+                let field = format!("items[{i}]");
+                let (nodes, tags, what) = match src {
+                    Source::New => {
+                        slots.push(None);
+                        changes.push(None);
+                        continue;
+                    }
+                    Source::Part(id, clip) => (clip.objects, clip.tags, format!("pieza {id}")),
+                    Source::Panel(src_path, object) => {
+                        if !copied.iter().any(|(p, _)| *p == src_path) {
+                            let c = read_clip(u.copy_objects(&t, &src_path, false)?)?.ok_or_else(|| VijeoError::invalid(format!("{field}.from_panel"), "el panel no tiene objetos"))?;
+                            copied.push((src_path.clone(), c));
+                        }
+                        let c = &copied.iter().find(|(p, _)| *p == src_path).unwrap().1;
+                        let at = c.resolve(&object).map_err(|e| VijeoError::invalid(format!("{field}.object"), e))?;
+                        (vec![c.node(&at).clone()], c.tags.clone(), format!("«{object}» de {src_path}"))
+                    }
+                };
+                let clip = panel_ops::prepare_insert(nodes, tags, item, &field)?;
+                let names: Vec<String> = clip.objects.iter().map(|n| n.name()).collect();
+                changes.push(Some(format!("{what} insertada como «{}» en ({}, {})", names.join(", "), item.x, item.y)));
+                slots.push(Some(clip));
+            }
+            // Lo que ya hay en el panel (copiado al final: el panel de destino queda activo para pegar).
+            let current = read_clip(u.copy_objects(&t, &path, false)?)?;
+            let before = current.as_ref().map(|c| c.objects.len()).unwrap_or(0);
+            let mut taken: Vec<String> = current.as_ref().map(|c| c.walk().into_iter().map(|(_, p)| p.rsplit('/').next().unwrap_or(&p).to_owned()).collect()).unwrap_or_default();
+            for (i, item) in req.items.iter().enumerate() {
+                if slots[i].is_none() {
+                    let field = format!("items[{i}]");
+                    let clip = panel_ops::create_insert(item, &field, &lookup, &mut taken)?;
+                    let o = &clip.objects[0];
+                    changes[i] = Some(format!("{} nuevo «{}» en ({}, {})", o.kind(), o.name(), item.x, item.y));
+                    slots[i] = Some(clip);
+                }
+            }
+            let prepared: Vec<objects::Clip> = slots.into_iter().flatten().collect();
+            let changes: Vec<String> = changes.into_iter().flatten().collect();
+            touched = true;
+            // Tras un Copy, Vijeo desplaza cada Paste 5 px más que el anterior (+5, +10…): se compensa.
+            for (i, clip) in prepared.iter().enumerate() {
+                let k = PASTE_STEP * (i as i32 + 1);
+                u.paste_objects(&panel_ops::shifted(clip, -k, -k)?.to_cfb().map_err(clip_error)?)?;
+            }
+            let want: Vec<objects::Node> = prepared.iter().flat_map(|c| c.objects.iter().cloned()).collect();
+            let mut after = read_clip(u.copy_objects(&t, &path, false)?)?.ok_or_else(|| VijeoError::Internal("tras pegar, el panel no tiene objetos".into()))?;
+            let mut notes = Vec::new();
+            if after.objects.len() >= before && !panel_ops::differences(&want, &after.objects[before..]).is_empty() {
+                // Si aún quedó algo fuera de sitio: cortar todo, recolocarlo y pegarlo de una vez (tras un Cut, el
+                // primer Paste no se desplaza).
+                let cut = u.copy_objects(&t, &path, true)?.ok_or_else(|| VijeoError::Internal("Vijeo no cortó los objetos del panel".into()))?;
+                let mut fixed = objects::Clip::from_bytes(&cut).map_err(clip_error)?;
+                if panel_ops::realign(&mut fixed, before, &want)? {
+                    notes.push("Vijeo dejó desplazado lo pegado y se recolocó (cortando y pegando el panel)".to_string());
+                    let pasted = fixed.to_cfb().map_err(clip_error).and_then(|b| u.paste_objects(&b));
+                    match read_clip(u.copy_objects(&t, &path, false)?)? {
+                        Some(c) => after = c,
+                        None => {
+                            u.paste_objects(&cut)?;
+                            return Err(pasted.err().unwrap_or_else(|| VijeoError::Internal("Vijeo no pegó los objetos recolocados: se volvió a pegar lo que había".into())));
+                        }
+                    }
+                    pasted?;
+                } else {
+                    u.paste_objects(&cut)?;
+                    after = read_clip(u.copy_objects(&t, &path, false)?)?.unwrap_or(fixed);
+                }
+            }
+            let warnings = if after.objects.len() >= before { panel_ops::differences(&want, &after.objects[before..]) } else { vec!["el panel tiene menos objetos que antes de pegar".into()] };
+            u.save()?;
+            Ok((changes, panel_ops::to_objects(&after), warnings, notes))
+        });
+        if touched {
+            inst.mark_unsaved();
+        }
+        backup.restore();
+        let (changes, objects, warnings, mut notes) = r?;
+        if req.items.iter().any(|i| i.toolchest.is_some()) {
+            notes.push("las piezas de la Toolchest llegan sin configurar (variables vacías, como al arrastrarlas): project_build dice qué les falta".into());
+        }
+        if req.items.iter().any(|i| i.create.is_some()) {
+            notes.push("los objetos nuevos enlazan sus variables por nombre al pegarlos: project_build confirma que todo compila".into());
+        }
+        notes.push("el proyecto queda con cambios sin guardar en el .vdz: project_save para conservarlos".into());
+        Ok(PanelChangeResult { target: t, panel: found.path, applied: true, changes, objects, warnings, notes })
+    }
+
+    fn toolchest(&self, f: &ToolchestFilter) -> VijeoResult<ToolchestResult> {
+        let libs = self.toolchest_libs()?;
+        let lib_f = f.library.as_deref().map(|s| s.trim().replace('/', "\\").to_lowercase()).filter(|s| !s.is_empty());
+        let text_f = f.text.as_deref().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
+        let mut notes = Vec::new();
+        if lib_f.is_none() && text_f.is_none() {
+            notes.push("indica `library` o `text` para ver las piezas".into());
+            return Ok(ToolchestResult { libraries: libs.iter().map(toolchest::summary).collect(), parts: Vec::new(), notes });
+        }
+        let (mut parts, mut legacy, mut panels, mut failed) = (Vec::new(), 0, 0, 0);
+        for lib in libs.iter().filter(|l| lib_f.as_deref().is_none_or(|w| l.name.to_lowercase().contains(w))) {
+            for (p, r) in toolchest::read_all(lib) {
+                match r {
+                    Ok(clip) => {
+                        let d = toolchest::describe(lib, &p, &clip);
+                        let hay = format!("{} {} {}", d.library, d.name, d.kinds.join(" ")).to_lowercase();
+                        if text_f.as_deref().is_none_or(|w| hay.contains(w)) {
+                            parts.push(d);
+                        }
+                    }
+                    Err(e) if e == objects::LEGACY => legacy += 1,
+                    Err(e) if e == objects::PANEL => panels += 1,
+                    Err(e) => {
+                        failed += 1;
+                        tracing::warn!(library = %lib.name, part = %p, "pieza de la Toolchest no leída: {e}");
+                    }
+                }
+            }
+        }
+        if legacy > 0 {
+            notes.push(format!("{legacy} pieza(s) con un formato antiguo (Image Library y algunas plantillas) no se listan: no se pueden insertar"));
+        }
+        if panels > 0 {
+            notes.push(format!("{panels} pieza(s) son paneles enteros: no se listan"));
+        }
+        if failed > 0 {
+            notes.push(format!("{failed} pieza(s) no se pudieron leer"));
+        }
+        if parts.len() > MAX_TOOLCHEST_PARTS {
+            notes.push(format!("hay {} piezas: se muestran las {MAX_TOOLCHEST_PARTS} primeras (afina con library o text)", parts.len()));
+            parts.truncate(MAX_TOOLCHEST_PARTS);
+        }
+        Ok(ToolchestResult { libraries: Vec::new(), parts, notes })
     }
 }
 

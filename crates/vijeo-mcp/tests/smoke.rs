@@ -150,6 +150,10 @@ fn smoke_list_and_catalog() {
 
     // Variables sin Vijeo (vdz_variable_list / vdz_variable_edit).
     assert!(names.contains(&"vdz_variable_list") && names.contains(&"vdz_variable_edit"));
+    // variable_list (del XML de Vijeo) se quitó: vdz_variable_list hace lo mismo sin Vijeo, también con `project`.
+    assert!(!names.contains(&"variable_list"));
+    let (err, msg) = c.call("vdz_variable_list", json!({}));
+    assert!(err && msg.as_str().unwrap().contains("project/path"), "{msg}");
     let (err, msg) = c.call("vdz_variable_edit", json!({"path": r"C:\no-existe-mcp\x.vdz", "edits": [{"op": "add_folder", "path": "A"}]}));
     assert!(err && msg.as_str().unwrap().contains("[invalid_argument]"), "{msg}");
     let modbus = r"C:\Program Files (x86)\Schneider Electric\EcoStruxure Machine Expert - Basic\Examples\Compact_Modbus SL_M221_Book.vdz";

@@ -1129,7 +1129,7 @@ fn check_variables(known: &[String], vars: &[String], target: &str) -> VijeoResu
         })
         .collect();
     if !missing.is_empty() {
-        return Err(VijeoError::invalid("variables", format!("no existen en «{target}»: {} (variable_list las lista)", missing.join(", "))));
+        return Err(VijeoError::invalid("variables", format!("no existen en «{target}»: {} (vdz_variable_list las lista)", missing.join(", "))));
     }
     Ok(())
 }
@@ -2007,12 +2007,21 @@ impl ConfigOps for Vd63Backend {
         Ok(ConfigEditResult { path: dest, written: true, changes: edit.changes, target: with_hmi_type(edit.expected), notes })
     }
 
-    fn file_variables(&self, vdz: &Path, elements: bool) -> VijeoResult<Vec<VariableInfo>> {
+    fn file_variables(&self, vdz: &Path, target: Option<&str>, elements: bool, system: bool) -> VijeoResult<Vec<VariableInfo>> {
         self.require(Capability::OfflineVariables)?;
         check_vdz_input("path", vdz)?;
-        let mut cfb = swx::open_vdz(vdz)?;
-        let (db, target) = read_tagdb(&mut cfb)?;
-        Ok(db.variables(&target, elements))
+        variables_of(&mut swx::open_vdz(vdz)?, target, elements, system)
+    }
+
+    fn project_variables(&self, p: ProjectId, target: Option<&str>, elements: bool, system: bool) -> VijeoResult<Vec<VariableInfo>> {
+        self.require(Capability::OfflineVariables)?;
+        let inst = self.get(p)?;
+        // Ctrl+S en Vijeo escribe la copia de trabajo (no el .vdz): así se lee también lo cambiado en la ventana de Vijeo.
+        let swx_path = inst.with_ui("vdz_variable_list", |u| {
+            u.save()?;
+            Ok(u.swx())
+        })?;
+        variables_of(&mut swx::open_swx(&swx_path)?, target, elements, system)
     }
 
     fn edit_file_variables(&self, req: &VariablesEditRequest) -> VijeoResult<VariablesEditResult> {
@@ -2051,8 +2060,8 @@ impl ConfigOps for Vd63Backend {
         }
 
         let mut cfb = swx::open_vdz(vdz)?;
-        let (mut db, target) = read_tagdb(&mut cfb)?;
-        let streams = if req.edits.iter().any(|e| matches!(e, VariableEdit::Delete { force: false, .. })) { swx::all_streams(&mut cfb) } else { Vec::new() };
+        let (mut db, target) = read_tagdb(&mut cfb, req.target.as_deref())?;
+        let streams = if req.edits.iter().any(|e| matches!(e, VariableEdit::Delete { force: false, .. })) { target_streams(&mut cfb, db.active) } else { Vec::new() };
         let mut changes = Vec::new();
         let mut touched: Vec<String> = Vec::new();
         let names = |n: &str| -> VijeoResult<()> {
@@ -2103,7 +2112,7 @@ impl ConfigOps for Vd63Backend {
                 }
             }
         }
-        let expected = db.variables(&target, true);
+        let expected = db.variables(&target, true, false);
         let pick = |all: &[VariableInfo]| -> Vec<VariableInfo> { all.iter().filter(|v| touched.iter().any(|t| t.eq_ignore_ascii_case(&v.name))).cloned().collect() };
         if req.dry_run {
             notes.push("dry_run: no se escribió nada".into());
@@ -2116,9 +2125,9 @@ impl ConfigOps for Vd63Backend {
         let tmp = dest.with_file_name(format!("{}.mcp-tmp", dest.file_name().unwrap_or_default().to_string_lossy()));
         let written = (|| {
             vdz::replace_swx(vdz, &tmp, &swx::into_bytes(cfb)?)?;
-            let (again, _) = read_tagdb(&mut swx::open_vdz(&tmp)?)?;
+            let (again, _) = read_tagdb(&mut swx::open_vdz(&tmp)?, Some(&target))?;
             let json = |v: &[VariableInfo]| serde_json::to_value(v).unwrap_or_default();
-            if json(&again.variables(&target, true)) != json(&expected) {
+            if json(&again.variables(&target, true, false)) != json(&expected) {
                 return Err(VijeoError::Internal("al releer el fichero escrito las variables no son las esperadas: no se reemplazó el destino".into()));
             }
             std::fs::rename(&tmp, &dest).map_err(|e| VijeoError::io(&dest, e))?;
@@ -2132,20 +2141,60 @@ impl ConfigOps for Vd63Backend {
             }
         };
         notes.push("compílalo con project_build (path) para comprobar que Vijeo lo acepta; project_show_in_vijeo lo abre en Vijeo".into());
-        Ok(VariablesEditResult { path: dest, written: true, changes, variables: pick(&again.variables(&target, true)), notes })
+        Ok(VariablesEditResult { path: dest, written: true, changes, variables: pick(&again.variables(&target, true, false)), notes })
     }
 }
 
-/// Base de variables del `.vdz` y nombre de su target. Los proyectos con varios targets todavía no: la base es una
-/// sola para todo el proyecto y no se sabe aún a qué target va cada variable.
-fn read_tagdb(cfb: &mut cfb::CompoundFile<std::io::Cursor<Vec<u8>>>) -> VijeoResult<(tagdb::TagDb, String)> {
-    let targets = swx::target_names(cfb).unwrap_or_default();
-    if targets.len() > 1 {
-        return Err(VijeoError::Refused(format!("proyectos con varios targets ({}): las variables sin Vijeo todavía no", targets.join(", "))));
-    }
+type Cfb = cfb::CompoundFile<std::io::Cursor<Vec<u8>>>;
+
+/// Base de variables del `.vdz` y los nombres de sus targets en orden de creación (el de sus bloques en la base).
+fn open_tagdb(cfb: &mut Cfb) -> VijeoResult<(tagdb::TagDb, Vec<String>)> {
     let tag = swx::stream(cfb, "/Services/TagDatabase").ok_or_else(|| VijeoError::Internal("el .vdz no tiene Services/TagDatabase".into()))?;
     let ns = swx::stream(cfb, "/Services/NameServer").ok_or_else(|| VijeoError::Internal("el .vdz no tiene Services/NameServer".into()))?;
-    Ok((tagdb::TagDb::parse(tag, ns)?, targets.into_iter().next().unwrap_or_default()))
+    let db = tagdb::TagDb::parse(tag, ns)?;
+    let names = swx::target_names(cfb).unwrap_or_default();
+    if names.len() != db.targets {
+        return Err(VijeoError::Internal(format!("la base de variables tiene {} bloque(s) de target y el proyecto {} target(s)", db.targets, names.len())));
+    }
+    Ok((db, names))
+}
+
+/// Variables de `target` (sin él, las de todos los targets, cada una con el suyo).
+fn variables_of(cfb: &mut Cfb, target: Option<&str>, elements: bool, system: bool) -> VijeoResult<Vec<VariableInfo>> {
+    let (mut db, names) = open_tagdb(cfb)?;
+    let wanted: Vec<usize> = match target {
+        Some(t) => vec![target_index(&names, Some(t))?],
+        None => (0..names.len()).collect(),
+    };
+    let mut out = Vec::new();
+    for k in wanted {
+        db.select(k)?;
+        out.extend(db.variables(&names[k], elements, system));
+    }
+    Ok(out)
+}
+
+/// Posición de `target` entre los del proyecto (sin distinguir mayúsculas); sin él, el único que hay.
+fn target_index(names: &[String], target: Option<&str>) -> VijeoResult<usize> {
+    match target {
+        Some(t) => names.iter().position(|n| n.eq_ignore_ascii_case(t.trim())).ok_or_else(|| VijeoError::TargetNotFound(t.to_owned())),
+        None if names.len() == 1 => Ok(0),
+        None => Err(VijeoError::invalid("target", format!("el proyecto tiene {} targets ({}): indica cuál", names.len(), names.join(", ")))),
+    }
+}
+
+/// Base de variables del `.vdz` lista para leer y editar las de `target` (sin él, las del único target), y su nombre.
+fn read_tagdb(cfb: &mut Cfb, target: Option<&str>) -> VijeoResult<(tagdb::TagDb, String)> {
+    let (mut db, names) = open_tagdb(cfb)?;
+    let k = target_index(&names, target)?;
+    db.select(k)?;
+    Ok((db, names[k].clone()))
+}
+
+/// Ficheros del `.vdz` donde se buscan los usos de una variable del target `k`: todos menos los de los demás targets.
+fn target_streams(cfb: &mut Cfb, k: usize) -> Vec<(String, Vec<u8>)> {
+    let others: Vec<String> = swx::target_storages(cfb).into_iter().enumerate().filter(|(i, _)| *i != k).map(|(_, s)| format!("/Targets/{s}/")).collect();
+    swx::all_streams(cfb).into_iter().filter(|(p, _)| !others.iter().any(|o| p.replace('\\', "/").starts_with(o.as_str()))).collect()
 }
 
 fn settings_of(s: &VariableSettings) -> tagdb::Settings {
@@ -2196,11 +2245,6 @@ impl ReportOps for Vd63Backend {
             targets: targets.len(),
             panels: targets.iter().map(|t| vxml::base_panel_refs(*t).len()).sum(),
         })
-    }
-
-    fn variables(&self, p: ProjectId, target: Option<&str>) -> VijeoResult<Vec<VariableInfo>> {
-        self.require(Capability::Reports)?;
-        self.from_vxml(p, target, vxml::variables)
     }
 
     fn panels(&self, p: ProjectId, target: Option<&str>) -> VijeoResult<Vec<PanelReport>> {
@@ -2313,7 +2357,8 @@ impl VariableOps for Vd63Backend {
         let r = inst.with_ui("Import Variables", |u| u.import_variables(&t.name, &csv, req.replace_existing));
         // Aunque falle, Vijeo puede haber cambiado algo antes de pararse.
         inst.mark_unsaved();
-        let feedback: Vec<String> = r?.lines().map(str::to_owned).collect();
+        // Las líneas de la ventana de salida empiezan con caracteres de control (`\u{1}\u{2}`, `\u{1}\u{c}`).
+        let feedback: Vec<String> = r?.lines().map(|l| l.trim_start_matches(char::is_control).to_owned()).collect();
         let imported = feedback.iter().find_map(|l| l.strip_suffix(" variables were imported.").or_else(|| l.strip_suffix(" variable was imported.")).and_then(|n| n.trim().parse().ok()));
         if let (Some(n), Some(want)) = (imported, expected) {
             if n != want {
@@ -2321,7 +2366,7 @@ impl VariableOps for Vd63Backend {
             }
         }
         if imported.is_none() {
-            warnings.push("Vijeo no dijo cuántas variables importó: compruébalo con variable_list".into());
+            warnings.push("Vijeo no dijo cuántas variables importó: compruébalo con vdz_variable_list".into());
         }
         notes.push("el proyecto queda con cambios sin guardar en el .vdz: project_save para conservarlos".into());
         Ok(VariableImportResult { target: t.name, csv, imported, feedback, warnings, notes })

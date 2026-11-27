@@ -80,6 +80,11 @@ fn numbered(c: &Cfb, path: &str, prefix: &str) -> Vec<String> {
     v.into_iter().map(|(_, n)| n).collect()
 }
 
+/// Almacenes de los targets (`Target1`, `Target2`…) en orden de creación.
+pub fn target_storages(c: &Cfb) -> Vec<String> {
+    numbered(c, "/Targets", "Target")
+}
+
 fn substorages(c: &Cfb, path: &str) -> Vec<String> {
     c.read_storage(path).map(|es| es.filter(|e| e.is_storage()).map(|e| e.name().to_owned()).collect()).unwrap_or_default()
 }

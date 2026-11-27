@@ -25,6 +25,7 @@ const EF4: [u8; 4] = [0xEF; 4];
 /// Fin de registro.
 const MARK: [u8; 4] = [0xDA, 0x50, 0xED, 0x1C];
 const CLS_TYPE: u32 = 4003;
+const CLS_TEMPLATE: u32 = 4004;
 const CLS_VAR: u32 = 4005;
 const CLS_AFTER_VARS: u32 = 4009;
 const CLS_GROUPS: u32 = 4010;
@@ -355,6 +356,10 @@ pub struct TagDb {
     pub types: Vec<DataType>,
     /// Grupos de alarma, registro y escaneo: id → nombre.
     pub groups: BTreeMap<&'static str, BTreeMap<u32, String>>,
+    /// Bloques de target que tiene la base (uno por target, en el orden de creación de los targets).
+    pub targets: usize,
+    /// Target cuyo bloque se lee y se edita (`select`): sus variables, carpetas y grupos están en los campos de arriba.
+    pub active: usize,
 }
 
 fn bad(what: &str) -> VijeoError {
@@ -377,19 +382,42 @@ impl TagDb {
             next_id_at: 0,
             types: Vec::new(),
             groups: BTreeMap::new(),
+            targets: 0,
+            active: 0,
         };
         db.index()?;
         Ok(db)
     }
 
+    /// Pasa a leer y editar el bloque del target `index` (0 = el primero creado).
+    pub fn select(&mut self, index: usize) -> VijeoResult<()> {
+        if index >= self.targets {
+            return Err(bad(&format!("el target {index} (la base tiene {})", self.targets)));
+        }
+        self.active = index;
+        self.index()
+    }
+
+    /// Con varios targets (verificado con dos): un contenedor `4001 | u32 nº de bloques` y, por target,
+    /// `u32 k | 4004 (plantilla) … | u32 n | variables | MARK | u32 siguiente id | MARK`; detrás `MARK | 4009`. Los ids de
+    /// variables y de carpetas empiezan en cada bloque; después de 4009 van, en el mismo orden, un par 4010 (grupos) /
+    /// 4011 (carpetas) por target. Los tipos de datos (4003) son de todo el proyecto; NameServer también es uno, pero
+    /// cada target tiene ahí su nodo de nombres de primer nivel y los de sus carpetas (los que usan las ediciones, que
+    /// los buscan a partir de las variables y carpetas del bloque).
     fn index(&mut self) -> VijeoResult<()> {
         let b = &self.b;
         if u32_at(b, 0) != Some(8) || u32_at(b, 4).map(|n| n as usize + 9) != Some(b.len()) {
             return Err(bad("el campo de longitud"));
         }
         self.names = NameServer::parse(&self.ns).ok_or_else(|| bad("NameServer"))?;
+        let blocks: Vec<usize> = find_all(b, &class_header(CLS_TEMPLATE));
+        self.targets = blocks.len();
+        let k = self.active;
+        if blocks.is_empty() || k >= blocks.len() {
+            return Err(bad("el bloque de variables del target"));
+        }
         // Carpetas: 4011 | u32 último id | u32 n | n × (u32 id | 4012 | EF×4 | 6 × u32 | MARK).
-        let fh = find_from(b, &class_header(CLS_FOLDERS), 0).ok_or_else(|| bad("la lista de carpetas"))?;
+        let fh = *find_all(b, &class_header(CLS_FOLDERS)).get(k).ok_or_else(|| bad("la lista de carpetas"))?;
         self.folder_header = fh + 8;
         let n = u32_at(b, fh + 12).ok_or_else(|| bad("la lista de carpetas"))?;
         let mut p = fh + 16;
@@ -417,10 +445,22 @@ impl TagDb {
         for (f, path) in folders.iter_mut().zip(paths) {
             f.path = path;
         }
-        // Variables: u32 n | registros por id ascendente | MARK | u32 siguiente id | MARK MARK | 4009.
-        let mut tops: Vec<usize> = find_all(b, &class_header(CLS_VAR))
+        // Variables del bloque: u32 n | registros por id ascendente | MARK | u32 siguiente id | MARK, y luego el bloque
+        // siguiente (`u32 k+1 | 4004`) o, en el último, `MARK | 4009`.
+        let after = find_from(b, &class_header(CLS_AFTER_VARS), blocks[k]).ok_or_else(|| bad("el fin de la lista de variables"))?;
+        let block_end = match blocks.get(k + 1) {
+            Some(&next) if next >= 4 => next - 4,
+            Some(_) => return Err(bad("el bloque de variables del target")),
+            None => {
+                if after < 4 || b[after - 4..after] != MARK {
+                    return Err(bad("el fin de la lista de variables"));
+                }
+                after - 4
+            }
+        };
+        let mut tops: Vec<usize> = find_all(&b[..block_end], &class_header(CLS_VAR))
             .into_iter()
-            .filter(|&m| m >= 4 + 8)
+            .filter(|&m| m >= 4 + 8 && m > blocks[k])
             .map(|m| m - 4)
             .filter(|&i| parse_props(b, i + 12).is_some_and(|(pr, _)| get(&pr, prop::NAME).is_some()))
             .collect();
@@ -430,11 +470,10 @@ impl TagDb {
         if u32_at(b, self.count_at) != Some(tops.len() as u32) {
             return Err(bad("el número de variables"));
         }
-        let after = find_from(b, &class_header(CLS_AFTER_VARS), *tops.last().unwrap()).ok_or_else(|| bad("el fin de la lista de variables"))?;
-        if after < 16 || b[after - 8..after] != [MARK, MARK].concat()[..] {
+        if block_end < 12 || b[block_end - 4..block_end] != MARK {
             return Err(bad("el fin de la lista de variables"));
         }
-        self.next_id_at = after - 12;
+        self.next_id_at = block_end - 8;
         self.list_end = self.next_id_at - 4;
         if b[self.list_end..self.next_id_at] != MARK {
             return Err(bad("el fin de la lista de variables"));
@@ -462,8 +501,8 @@ impl TagDb {
         }
         self.folders = folders;
         self.vars = vars;
-        self.types = data_types(b, self.count_at);
-        self.groups = groups(b);
+        self.types = data_types(b, blocks[0]);
+        self.groups = groups(b, k);
         Ok(())
     }
 
@@ -524,7 +563,7 @@ impl TagDb {
         Some(self.groups.get(kind).and_then(|g| g.get(&id)).cloned().unwrap_or_else(|| format!("#{id}")))
     }
 
-    /// Descripción de una variable o elemento como en `variable_list` (lo que exporta Vijeo en el XML: las referencias
+    /// Descripción de una variable o elemento como en `vdz_variable_list` (lo que exporta Vijeo en el XML: las referencias
     /// indirectas son `Internal` con `Reference`, y el valor inicial sólo sale en las internas; en un BOOL sin valor,
     /// `Disabled`).
     fn describe(&self, target: &str, name: String, props: &[Prop], type_hint: Option<String>) -> VariableInfo {
@@ -548,6 +587,9 @@ impl TagDb {
         }
         put("ScanGroup", self.group("scan", int(prop::SCAN_GROUP)));
         put("AlarmGroup", int(prop::ALARM).filter(|&a| a != 0).and_then(|_| self.group("alarm", int(prop::ALARM_GROUP))));
+        // Como en el XML: alarmas definidas (con su mensaje), también las deshabilitadas (sin 0x0A). Verificado con BOOL.
+        let alarms = props.iter().filter(|p| p.id == prop::ALARM_MESSAGE).count();
+        put("Alarms", (alarms > 0).then(|| alarms.to_string()));
         put("LoggingGroup", self.group("logging", int(prop::LOGGING_GROUP)));
         put("NoOfBytes", int(prop::BYTES).map(|n| n.to_string()));
         put("Sharing", int(prop::SHARING).map(|s| if s == 2 { "Read Only".to_owned() } else { s.to_string() }));
@@ -568,9 +610,10 @@ impl TagDb {
         }
     }
 
-    /// Variables, instancias de estructura y (con `elements`) sus miembros, ordenadas por nombre; sin las del sistema.
-    pub fn variables(&self, target: &str, elements: bool) -> Vec<VariableInfo> {
-        let mut vars: Vec<&Var> = self.vars.iter().filter(|v| !v.system).collect();
+    /// Variables, instancias de estructura y (con `elements`) sus miembros, ordenadas por nombre; las del sistema (`_…`)
+    /// sólo con `system`.
+    pub fn variables(&self, target: &str, elements: bool, system: bool) -> Vec<VariableInfo> {
+        let mut vars: Vec<&Var> = self.vars.iter().filter(|v| system || !v.system).collect();
         vars.sort_by(|a, b| a.name.cmp(&b.name));
         let mut out = Vec::new();
         for v in vars {
@@ -683,10 +726,11 @@ fn data_types(b: &[u8], limit: usize) -> Vec<DataType> {
 }
 
 /// Grupos de alarma (0x4D), registro (0x4E) y escaneo (0x4F) del bloque 4010: secciones `u32 id | 12 bytes 0`
-/// seguidas de entradas `u32 id | u32 id de nombre | u32 caracteres | nombre`.
-fn groups(b: &[u8]) -> BTreeMap<&'static str, BTreeMap<u32, String>> {
+/// seguidas de entradas `u32 id | u32 id de nombre | u32 caracteres | nombre`. Con varios targets, el `k`-ésimo par
+/// 4010/4011.
+fn groups(b: &[u8], k: usize) -> BTreeMap<&'static str, BTreeMap<u32, String>> {
     let mut out: BTreeMap<&'static str, BTreeMap<u32, String>> = [("alarm", BTreeMap::new()), ("logging", BTreeMap::new()), ("scan", BTreeMap::new())].into();
-    let (Some(g0), Some(g1)) = (find_from(b, &class_header(CLS_GROUPS), 0), find_from(b, &class_header(CLS_FOLDERS), 0)) else { return out };
+    let (Some(&g0), Some(&g1)) = (find_all(b, &class_header(CLS_GROUPS)).get(k), find_all(b, &class_header(CLS_FOLDERS)).get(k)) else { return out };
     if g1 <= g0 {
         return out;
     }
@@ -1234,7 +1278,7 @@ mod tests {
     #[test]
     fn reads_the_modbus_example() {
         let Some(db) = modbus() else { return };
-        let all = db.variables("HMI", true);
+        let all = db.variables("HMI", true, false);
         assert_eq!(all.len(), 183);
         let e = find(&all, "MyController.Energy.reTotalEnergy");
         assert_eq!((e.data_type.as_str(), e.source.as_str(), e.address.as_deref()), ("REAL", "External", Some("%MF16")));
@@ -1251,7 +1295,7 @@ mod tests {
     #[test]
     fn edits_round_trip() {
         let Some(mut db) = modbus() else { return };
-        let before = db.variables("HMI", true);
+        let before = db.variables("HMI", true, false);
         let ext = |a: &str| Settings { source: Some("External".into()), address: Some(a.into()), ..Default::default() };
         assert!(db.add_folder("Mcp.Sub").unwrap());
         assert!(!db.add_folder("Mcp").unwrap());
@@ -1280,7 +1324,7 @@ mod tests {
         // Releer desde los bytes, como al abrir el .vdz guardado.
         let (b, ns) = db.into_streams();
         let db = TagDb::parse(b, ns).unwrap();
-        let after = db.variables("HMI", true);
+        let after = db.variables("HMI", true, false);
         let c = find(&after, "Mcp.Contador");
         assert_eq!((c.data_type.as_str(), c.source.as_str(), c.description.as_deref(), c.extra.get("InitialValue").map(String::as_str)), ("INT", "Internal", Some("de prueba"), Some("-5")));
         let m = find(&after, "Mcp.Sub.Marcha");
@@ -1317,7 +1361,7 @@ mod tests {
         let doc = crate::vxml::parse(&xml).unwrap();
         let t = crate::vxml::targets(&doc)[0];
         let want = crate::vxml::variables(t);
-        let got = db.variables("", false);
+        let got = db.variables("", false, false);
         eprintln!("XML {} variables, TagDatabase {}", want.len(), got.len());
         let mut types: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
         let mut diffs = 0;
@@ -1359,5 +1403,99 @@ mod tests {
         eprintln!("tipos XML → TagDatabase: {types:#?}");
         eprintln!("diferencias: {diffs}");
     }
-}
 
+
+    /// Los cuatro ejemplos de Machine Expert Basic contra su XML (corpus de `docs/`): mismas variables y el mismo `extra`
+    /// campo por campo, salvo `AlarmGroup` (sólo lo da la lectura offline) y el formato que Vijeo exporta por defecto en
+    /// las externas de tipo `Integer` (no está en la base). Sin la instalación o el corpus, no hace nada.
+    #[test]
+    fn extra_matches_the_exported_xml() {
+        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/reference/vd-6.3/corpus/xml");
+        let examples = std::path::Path::new(MODBUS).parent().unwrap();
+        let integer_format = ["BitWidth", "DataFormat", "DataLength", "OffsetBitNo", "Signed"];
+        for (v, x) in [("Compact_Hardwired_M221", "Compact_Hardwired_M221"), ("Compact_Modbus SL_M221_Book", "Compact_Modbus SL_M221 Book"), ("MaterialWork_Drill_HW_M221", "Material Working_Drill machine_H"), ("Packaging_TempCtrl_HW_M221", "Packaging_TempCtrl_HW_M221")] {
+            let (vdz, xml) = (examples.join(format!("{v}.vdz")), corpus.join(format!("{x}.vxml")));
+            if !vdz.is_file() || !xml.is_file() {
+                continue;
+            }
+            let mut c = crate::swx::open_vdz(&vdz).unwrap();
+            let db = TagDb::parse(crate::swx::stream(&mut c, "/Services/TagDatabase").unwrap(), crate::swx::stream(&mut c, "/Services/NameServer").unwrap()).unwrap();
+            let text = crate::reports::decode_text(&std::fs::read(&xml).unwrap());
+            let doc = crate::vxml::parse(&text).unwrap();
+            let want = crate::vxml::variables(crate::vxml::targets(&doc)[0]);
+            let got = db.variables("", false, false);
+            assert_eq!(want.len(), got.len(), "{v}");
+            for w in &want {
+                let g = got.iter().find(|g| g.name == w.name).unwrap_or_else(|| panic!("{v}: falta {}", w.name));
+                for k in w.extra.keys().chain(g.extra.keys()) {
+                    let skip = k == "AlarmGroup" || (w.data_type == "Integer" && w.source == "External" && integer_format.contains(&k.as_str()));
+                    assert!(skip || w.extra.get(k) == g.extra.get(k), "{v} {} {k}: XML {:?} offline {:?}", w.name, w.extra.get(k), g.extra.get(k));
+                }
+            }
+        }
+    }
+
+    /// Proyecto de prueba con dos targets (Primero y Segundo, hecho con Vijeo): `Comun` en los dos (INT y DINT) y una
+    /// carpeta propia en cada uno. Está en `docs/` (local); sin él, las pruebas no hacen nada.
+    fn two_targets() -> Option<TagDb> {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/reference/vd-6.3/corpus/McpDosTargets.vdz");
+        if !p.is_file() {
+            return None;
+        }
+        let mut c = crate::swx::open_vdz(&p).unwrap();
+        Some(TagDb::parse(crate::swx::stream(&mut c, "/Services/TagDatabase").unwrap(), crate::swx::stream(&mut c, "/Services/NameServer").unwrap()).unwrap())
+    }
+
+    fn summary(db: &TagDb, target: &str) -> Vec<(String, String)> {
+        db.variables(target, true, false).into_iter().map(|v| (v.name, v.data_type)).collect()
+    }
+
+    #[test]
+    fn reads_each_target_of_a_two_target_project() {
+        let Some(mut db) = two_targets() else { return };
+        assert_eq!(db.targets, 2);
+        let pairs = |v: &[(&str, &str)]| v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect::<Vec<_>>();
+        assert_eq!(summary(&db, "Primero"), pairs(&[("CarpUno.UnoDentro", "BOOL"), ("Comun", "INT"), ("UnoRaiz", "INT")]));
+        assert_eq!(db.folder_paths(), ["CarpUno"]);
+        assert!(db.variables("Primero", false, true).iter().any(|v| v.name == "_CurPanelID"));
+        db.select(1).unwrap();
+        assert_eq!(summary(&db, "Segundo"), pairs(&[("CarpDos.DosDentro", "BOOL"), ("Comun", "DINT"), ("DosRaiz", "REAL")]));
+        assert_eq!(db.folder_paths(), ["CarpDos"]);
+        assert!(db.select(2).is_err());
+    }
+
+    /// Cambios en un target: se releen en él y el otro queda igual.
+    #[test]
+    fn edits_one_target_and_leaves_the_other() {
+        for k in 0..2 {
+            let Some(mut db) = two_targets() else { return };
+            let names = ["Primero", "Segundo"];
+            db.select(1 - k).unwrap();
+            let other = summary(&db, names[1 - k]);
+            let other_groups = db.groups.clone();
+            db.select(k).unwrap();
+            let groups = db.groups.clone();
+            db.add_folder("Nueva.Sub").unwrap();
+            db.add_variable("Nueva.Sub.Marcha", "BOOL", &Settings::default()).unwrap();
+            db.add_variable("Comun2", "REAL", &Settings { initial_value: Some("2.5".into()), ..Default::default() }).unwrap();
+            db.set_variable("Comun", &Settings { description: Some("cambiada".into()), ..Default::default() }).unwrap();
+            let (b, ns) = db.into_streams();
+            let mut again = TagDb::parse(b, ns).unwrap();
+            again.select(k).unwrap();
+            let all = again.variables(names[k], true, false);
+            assert!(all.iter().any(|v| v.name == "Nueva.Sub.Marcha" && v.data_type == "BOOL"), "{all:?}");
+            assert!(all.iter().any(|v| v.name == "Comun2" && v.data_type == "REAL"));
+            assert_eq!(find(&all, "Comun").description.as_deref(), Some("cambiada"));
+            assert_eq!(again.groups, groups);
+            again.delete_variable("Nueva.Sub.Marcha").unwrap();
+            again.delete_folder("Nueva.Sub").unwrap();
+            again.delete_folder("Nueva").unwrap();
+            let (b, ns) = again.into_streams();
+            let mut again = TagDb::parse(b, ns).unwrap();
+            again.select(1 - k).unwrap();
+            assert_eq!(summary(&again, names[1 - k]), other);
+            assert_eq!(again.groups, other_groups);
+            assert!(again.variables(names[1 - k], true, false).iter().all(|v| v.description.as_deref() != Some("cambiada")));
+        }
+    }
+}

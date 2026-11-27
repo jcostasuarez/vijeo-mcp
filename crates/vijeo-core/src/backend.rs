@@ -178,9 +178,11 @@ pub trait ConfigOps: Send + Sync {
         overwrite: bool,
         dry_run: bool,
     ) -> VijeoResult<ConfigEditResult>;
-    /// Variables de un `.vdz` leídas de su base de variables, sin Vijeo (sin las del sistema). Con `elements`, también los
-    /// miembros de las instancias de estructura.
-    fn file_variables(&self, vdz: &Path, elements: bool) -> VijeoResult<Vec<VariableInfo>>;
+    /// Variables de un `.vdz` leídas de su base de variables, sin Vijeo: las de `target` o, sin él, las de todos. Con
+    /// `elements`, también los miembros de las instancias de estructura; con `system`, las del sistema (`_…`).
+    fn file_variables(&self, vdz: &Path, target: Option<&str>, elements: bool, system: bool) -> VijeoResult<Vec<VariableInfo>>;
+    /// Lo mismo sobre un proyecto abierto: guarda su copia de trabajo en Vijeo (sin tocar el `.vdz`) y la lee.
+    fn project_variables(&self, p: ProjectId, target: Option<&str>, elements: bool, system: bool) -> VijeoResult<Vec<VariableInfo>>;
     /// Crea, cambia y borra variables y carpetas directamente en un `.vdz`, sin Vijeo.
     fn edit_file_variables(&self, req: &VariablesEditRequest) -> VijeoResult<VariablesEditResult>;
 }
@@ -189,8 +191,6 @@ pub trait ConfigOps: Send + Sync {
 pub trait ReportOps: Send + Sync {
     /// Exporta el proyecto como `<nombre>.vxml` (y la carpeta de imágenes) en `dir`.
     fn export_xml(&self, p: ProjectId, dir: &Path, overwrite: bool) -> VijeoResult<XmlExportResult>;
-    /// Variables de uno o de todos los targets.
-    fn variables(&self, p: ProjectId, target: Option<&str>) -> VijeoResult<Vec<VariableInfo>>;
     /// Paneles base, maestros y ventanas emergentes con sus acciones de panel.
     fn panels(&self, p: ProjectId, target: Option<&str>) -> VijeoResult<Vec<PanelReport>>;
     /// Acciones globales.

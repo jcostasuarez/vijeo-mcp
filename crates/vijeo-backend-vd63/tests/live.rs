@@ -194,7 +194,7 @@ mod live {
         let target = info.targets[0].name.clone();
         let reports = backend.reports().unwrap();
 
-        let vars = reports.variables(p, None).unwrap();
+        let vars = backend.config().unwrap().project_variables(p, None, false, false).unwrap();
         eprintln!("{} variables; externas: {:?}", vars.len(), vars.iter().filter(|v| v.source == "External").map(|v| &v.name).take(5).collect::<Vec<_>>());
         let ext = vars.iter().find(|v| v.name == "MyController.Alarms.xAlarmEStop_1").expect("variable externa");
         assert!(ext.address.as_deref().unwrap_or_default().starts_with("%M"));
@@ -686,7 +686,7 @@ mod live {
     /// grupo ScanGroup1).
     #[test]
     fn live_generated_csv_imports() {
-        use vijeo_core::{BuildOps, FileOps, ProjectOps, ReportOps, VariableCsvRequest, VariableImportRequest, VariableOps};
+        use vijeo_core::{BuildOps, FileOps, ProjectOps, ConfigOps, VariableCsvRequest, VariableImportRequest, VariableOps};
         let Some(src) = modbus() else { return };
         let inst = installation().expect("Vijeo 6.3");
         let cfg = BackendConfig { cache_dir: Some(std::env::temp_dir().join("vijeo-mcp-live").join("no-cache")), ..Default::default() };
@@ -728,6 +728,10 @@ mod live {
         eprintln!("Vijeo: {r:?}");
         assert_eq!(r.imported, Some(vars.len()), "{r:?}");
         assert_eq!(r.target, target);
+        // La lectura offline del proyecto abierto ya las ve, sin project_save (el .vdz no cambió).
+        let fresh = ConfigOps::project_variables(&b, p, None, false, false).unwrap();
+        assert_eq!(fresh.iter().filter(|v| v.name.starts_with("McpCsv.")).count(), vars.len());
+        assert_eq!(ConfigOps::file_variables(&b, &src, None, false, false).unwrap().iter().filter(|v| v.name.starts_with("McpCsv.")).count(), 0);
 
         // Con las variables en la petición: una nueva y una que ya existe (no se toca sin replace_existing).
         let more = serde_json::json!([
@@ -740,7 +744,7 @@ mod live {
         assert!(r.warnings.iter().any(|w| w.contains("McpCsv.Interno.Factor")), "{:?}", r.warnings);
         assert!(r.imported.is_some(), "{r:?}");
         vars.push(serde_json::json!({"name": "McpCsv.Interno.Extra"}));
-        let got: Vec<_> = ReportOps::variables(&b, p, Some(&target)).unwrap().into_iter().filter(|v| v.name.starts_with("McpCsv.")).collect();
+        let got: Vec<_> = ConfigOps::project_variables(&b, p, Some(&target), false, false).unwrap().into_iter().filter(|v| v.name.starts_with("McpCsv.")).collect();
         for v in &got {
             eprintln!("{} {} {} {:?} {:?} {:?}", v.name, v.data_type, v.source, v.address, v.description, v.extra);
         }
@@ -884,6 +888,15 @@ mod live {
         b.shutdown().unwrap();
     }
 
+    /// Variables de cada target como las exporta Vijeo en el XML del proyecto abierto (la referencia de las lecturas sin
+    /// Vijeo).
+    fn xml_variables(b: &std::sync::Arc<dyn vijeo_core::Backend>, p: vijeo_core::ProjectId, dir: &std::path::Path) -> Vec<vijeo_core::VariableInfo> {
+        let out = b.reports().unwrap().export_xml(p, &dir.join("xml"), true).unwrap();
+        let text = vijeo_backend_vd63::reports::decode_text(&std::fs::read(&out.path).unwrap());
+        let doc = vijeo_backend_vd63::vxml::parse(&text).unwrap();
+        vijeo_backend_vd63::vxml::targets(&doc).into_iter().flat_map(vijeo_backend_vd63::vxml::variables).collect()
+    }
+
     /// vdz_variable_edit sobre una copia del ejemplo Modbus, sin Vijeo: carpetas y variables nuevas (internas y externas
     /// de varios tipos), cambios (dirección, descripción, bytes) y un borrado. Luego Vijeo: la copia compila con los
     /// errores del original; abierta, su XML tiene las variables como se escribieron; y lo que guarda Vijeo se relee
@@ -935,9 +948,9 @@ mod live {
         eprintln!("original: {:?}\ncopia: {:?}", base.messages, built.messages);
         assert_eq!(errs(&built.messages), errs(&base.messages));
 
-        let offline = cfg.file_variables(&vdz, true).unwrap();
+        let offline = cfg.file_variables(&vdz, None, true, false).unwrap();
         let info = b.projects().unwrap().open(&vdz).unwrap();
-        let xml = b.reports().unwrap().variables(info.id, None).unwrap();
+        let xml = xml_variables(&b, info.id, &dir);
         let by = |all: &[VariableInfo], n: &str| all.iter().find(|v| v.name == n).cloned();
         for n in ["Mcp.Contador", "Mcp.Sub.Marcha", "Mcp.Nivel", "Mcp.Texto", "McpRaiz", "Mcp.Largo", "MyController.Energy.iNueva", "MyController.Energy.iTimeSec", "sRefStringForComErrCodes"] {
             let (x, o) = (by(&xml, n), by(&offline, n));
@@ -950,15 +963,82 @@ mod live {
             }
         }
         assert!(by(&xml, "Mcp.Borrable").is_none() && by(&xml, "xRTCSyncDone").is_some());
-        assert_eq!(xml.len(), cfg.file_variables(&vdz, false).unwrap().len());
+        assert_eq!(xml.len(), cfg.file_variables(&vdz, None, false, false).unwrap().len());
 
         // Lo que guarda Vijeo se relee igual sin Vijeo.
         let resaved = dir.join("McpVariablesVijeo.vdz");
         b.projects().unwrap().save(info.id, Some(&resaved), true).unwrap();
         b.projects().unwrap().close(info.id, false).unwrap();
-        let again = cfg.file_variables(&resaved, true).unwrap();
+        let again = cfg.file_variables(&resaved, None, true, false).unwrap();
         let json = |v: &[VariableInfo]| serde_json::to_value(v).unwrap();
         assert_eq!(json(&again), json(&offline));
+        b.shutdown().unwrap();
+    }
+
+    /// Variables sin Vijeo en un proyecto de dos targets (`McpDosTargets.vdz` de `docs/`, hecho con Vijeo: `Comun` en
+    /// los dos con tipos distintos): se editan los dos targets de una copia, la copia compila sin errores, su XML tiene las
+    /// variables de cada target como se escribieron (también leídas con el proyecto abierto) y lo que guarda Vijeo se
+    /// relee igual.
+    #[test]
+    fn live_offline_variables_two_targets() {
+        use vijeo_core::{VariableInfo, VariablesEditRequest};
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/reference/vd-6.3/corpus/McpDosTargets.vdz");
+        if !src.is_file() {
+            return;
+        }
+        let b = backend();
+        let cfg = b.config().unwrap();
+        let dir = work_dir("offline_two_targets");
+        let vdz = dir.join("McpDosTargetsEdit.vdz");
+        std::fs::copy(&src, &vdz).unwrap();
+        // Sin target se niega (dice cuáles hay).
+        let no_target: VariablesEditRequest = serde_json::from_value(serde_json::json!({"path": vdz, "dry_run": true, "edits": [{"op": "add", "name": "X", "data_type": "INT"}]})).unwrap();
+        let e = cfg.edit_file_variables(&no_target).unwrap_err();
+        assert!(e.to_string().contains("Primero") && e.to_string().contains("Segundo"), "{e}");
+        for (target, extra) in [("Segundo", "Dos"), ("Primero", "Uno")] {
+            let req: VariablesEditRequest = serde_json::from_value(serde_json::json!({
+                "path": vdz, "target": target,
+                "edits": [
+                    {"op": "add_folder", "path": format!("Mcp{extra}.Sub")},
+                    {"op": "add", "name": format!("Mcp{extra}.Sub.Marcha"), "data_type": "BOOL"},
+                    {"op": "add", "name": format!("Mcp{extra}.Nivel"), "data_type": "REAL", "initial_value": 1.5, "description": "de prueba"},
+                    {"op": "add", "name": "McpComun", "data_type": "DINT", "initial_value": 7},
+                    {"op": "set", "name": "Comun", "description": format!("comun de {target}")}
+                ]
+            }))
+            .unwrap();
+            let r = cfg.edit_file_variables(&req).unwrap();
+            eprintln!("{target}: {:?}", r.changes);
+            assert!(r.written && r.variables.iter().all(|v| v.target == target), "{r:?}");
+        }
+        let built = b.build().unwrap().build_file(&vdz, None).unwrap();
+        eprintln!("compilación: {:?}", built.messages);
+        assert_eq!(built.errors, 0, "{:?}", built.messages);
+
+        let offline = cfg.file_variables(&vdz, None, true, false).unwrap();
+        eprintln!("{offline:#?}");
+        assert_eq!(offline.len(), 2 * (3 + 3));
+        let info = b.projects().unwrap().open(&vdz).unwrap();
+        let xml = xml_variables(&b, info.id, &dir);
+        let key = |v: &VariableInfo| (v.target.clone(), v.name.clone());
+        let row = |v: &VariableInfo| (key(v), v.data_type.clone(), v.source.clone(), v.description.as_deref().map(str::trim).map(str::to_owned), v.extra.get("InitialValue").cloned());
+        let sorted = |all: &[VariableInfo]| {
+            let mut v: Vec<_> = all.iter().map(row).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(sorted(&xml), sorted(&offline));
+        // Con el proyecto abierto: lo mismo, y sólo un target si se pide.
+        let open = cfg.project_variables(info.id, None, true, false).unwrap();
+        assert_eq!(sorted(&open), sorted(&offline));
+        let second = cfg.project_variables(info.id, Some("segundo"), true, false).unwrap();
+        assert!(second.len() == 6 && second.iter().all(|v| v.target == "Segundo"), "{second:?}");
+
+        let resaved = dir.join("McpDosTargetsVijeo.vdz");
+        b.projects().unwrap().save(info.id, Some(&resaved), true).unwrap();
+        b.projects().unwrap().close(info.id, false).unwrap();
+        let json = |v: &[VariableInfo]| serde_json::to_value(v).unwrap();
+        assert_eq!(json(&cfg.file_variables(&resaved, None, true, false).unwrap()), json(&offline));
         b.shutdown().unwrap();
     }
 

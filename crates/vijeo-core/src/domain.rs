@@ -591,6 +591,9 @@ pub enum VariableEdit {
 pub struct VariablesEditRequest {
     /// `.vdz` de origen.
     pub path: PathBuf,
+    /// Target cuyas variables se cambian (cada target tiene las suyas); hace falta si el proyecto tiene varios.
+    #[serde(default)]
+    pub target: Option<String>,
     /// Dónde escribir el resultado (por defecto, sobre `path`).
     #[serde(default)]
     pub save_as: Option<PathBuf>,

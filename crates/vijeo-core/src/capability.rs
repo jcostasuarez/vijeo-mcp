@@ -39,6 +39,8 @@ pub enum Capability {
     DataConvert,
     /// Abrir un panel en la ventana de Vijeo de un proyecto abierto (Navigator).
     PanelOpen,
+    /// Crear paneles base nuevos en un proyecto abierto (New Panel en el Navigator).
+    PanelCreate,
     /// Importar variables de un CSV en un target de un proyecto abierto (Variables › Import Variables).
     VariableImport,
     /// Leer, editar e insertar objetos en los paneles base de un proyecto abierto (portapapeles de Vijeo).
@@ -48,7 +50,7 @@ pub enum Capability {
 }
 
 impl Capability {
-    pub const ALL: [Capability; 19] = [
+    pub const ALL: [Capability; 20] = [
         Capability::ProjectLifecycle,
         Capability::TargetManage,
         Capability::Build,
@@ -65,6 +67,7 @@ impl Capability {
         Capability::VariableCsv,
         Capability::DataConvert,
         Capability::PanelOpen,
+        Capability::PanelCreate,
         Capability::VariableImport,
         Capability::PanelObjects,
         Capability::Toolchest,
@@ -88,6 +91,7 @@ impl Capability {
             Capability::VariableCsv => "variable_csv",
             Capability::DataConvert => "data_convert",
             Capability::PanelOpen => "panel_open",
+            Capability::PanelCreate => "panel_create",
             Capability::VariableImport => "variable_import",
             Capability::PanelObjects => "panel_objects",
             Capability::Toolchest => "toolchest",

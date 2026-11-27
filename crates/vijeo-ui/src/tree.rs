@@ -167,9 +167,10 @@ impl RemoteTree {
     }
 
     /// Renombra como al editar la etiqueta: `TVM_EDITLABEL` → texto → `TVM_ENDEDITLABELNOW`. El Navigator
-    /// recibe `TVN_ENDLABELEDIT` y aplica el nombre (o lo rechaza y deja el anterior).
+    /// recibe `TVN_ENDLABELEDIT` y aplica el nombre (o lo rechaza y deja el anterior). `TVM_EDITLABEL` sólo abre
+    /// la edición si el árbol tiene el foco (con un panel recién abierto lo tiene el editor y devolvía 0).
     pub fn rename(&self, item: TreeItem, name: &str) -> bool {
-        if !self.select(item) {
+        if !self.focus(item) {
             return false;
         }
         let Some(edit) = send(self.h(), TVM_EDITLABELW, 0, item).filter(|&e| e != 0) else { return false };

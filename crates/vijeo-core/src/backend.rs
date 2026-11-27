@@ -136,6 +136,8 @@ pub trait TargetOps: Send + Sync {
     /// Abre el panel en la ventana de Vijeo, como al hacer doble clic en el Navigator. `panel` es la ruta de
     /// panel_list (`BP:\Carpeta\Panel`) o la ruta sin `BP:\`.
     fn open_panel(&self, p: ProjectId, target: &str, panel: &str) -> VijeoResult<PanelRef>;
+    /// Crea un panel base vacío en el target (con `name`, o el `Panel<n>` que le dé Vijeo) y lo deja abierto.
+    fn create_panel(&self, p: ProjectId, target: &str, name: Option<&str>) -> VijeoResult<CreatedPanel>;
 }
 
 pub trait BuildOps: Send + Sync {

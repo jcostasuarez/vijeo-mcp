@@ -36,6 +36,8 @@ const CMD_CUT: u16 = 0xC03C;
 const CMD_COPY: u16 = 0xC03D;
 const CMD_PASTE: u16 = 0xC03E;
 const CMD_SELECT_ALL: u16 = 0xC043;
+/// New Panel (recurso `Main.ENU`; `0xC066` hace lo mismo): con «Base Panels» seleccionado crea un panel base.
+const CMD_NEW_PANEL: u16 = 0xC065;
 /// Lo que se espera a que termine un Copy/Cut/Paste antes de mirar si abrió un diálogo.
 const EDIT_COMMAND_WAIT: Duration = Duration::from_secs(10);
 
@@ -657,6 +659,76 @@ impl UiProject {
         Ok(out)
     }
 
+    /// Crea un panel base en el target: New Panel (`0xC065`) con el nodo «Base Panels» seleccionado en el Navigator.
+    /// Vijeo lo crea al momento, sin diálogo, como `<n>: Panel<n>` (n = el siguiente PanelID libre) y lo abre en el
+    /// editor (verificado en vivo). Con `name`, se renombra editando su etiqueta; si Vijeo no acepta el nombre, el
+    /// panel recién creado se borra y se devuelve el error con su texto. Devuelve (PanelID, nombre que queda).
+    pub fn new_panel(&mut self, target: &str, name: Option<&str>) -> VijeoResult<(u32, String)> {
+        let tree = self.tree()?;
+        let titem = self.target_item(target)?;
+        let bp = self.base_panels_item(&tree, titem).ok_or_else(|| VijeoError::Internal(format!("no se encontró el nodo de paneles base de «{target}» en el Navigator")))?;
+        tree.expand(bp);
+        let before: Vec<TreeItem> = tree.children(bp);
+        if !tree.focus(bp) {
+            return Err(VijeoError::Internal(format!("no se pudo seleccionar «{target} › Base Panels» en el Navigator")));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        let built = self.built;
+        self.sync_command("crear el panel", CMD_NEW_PANEL)?;
+        let (item, label) = self
+            .wait_until("crear el panel", self.t.call, |p| {
+                let tree = p.tree().ok()?;
+                tree.expand(bp);
+                tree.children(bp).into_iter().find(|c| !before.contains(c)).and_then(|c| tree.text(c).map(|t| (c, t)))
+            })
+            .map_err(|e| match e {
+                VijeoError::Timeout { op, ms } if built => VijeoError::Timeout { op: format!("{op}{AFTER_BUILD_HINT}"), ms },
+                e => e,
+            })?;
+        let (id, created) = parse_panel_label(&label).ok_or_else(|| VijeoError::Internal(format!("etiqueta de panel no reconocida en el Navigator: «{label}»")))?;
+        let mut got = created.clone();
+        if let Some(want) = name.filter(|n| *n != created) {
+            let tree = self.tree()?;
+            let renamed = tree.rename(item, want);
+            std::thread::sleep(Duration::from_millis(800));
+            let refused = self.ui.dialogs().into_iter().find(|d| d.info.message_box);
+            let why = match refused {
+                Some(d) => {
+                    let text = d.info.text.clone();
+                    let _ = d.click(if d.button_ids().contains(&IDOK) { IDOK } else { IDCANCEL });
+                    Some(format!("Vijeo no aceptó «{want}»: {text}"))
+                }
+                None if !renamed => Some(format!("no se pudo editar el nombre de «{created}» en el Navigator")),
+                None => None,
+            };
+            got = tree.text(item).and_then(|l| parse_panel_label(&l)).map(|(_, n)| n).unwrap_or_default();
+            if let Some(why) = why.or_else(|| (got != want).then(|| format!("Vijeo dejó el nombre «{got}» en vez de «{want}»"))) {
+                let undone = self.delete_panel_item(item, &got);
+                let tail = match undone {
+                    Ok(()) => format!("; se borró el panel «{created}» que se había creado"),
+                    Err(e) => format!("; el panel quedó creado como «{got}» y no se pudo borrar: {e}"),
+                };
+                self.save()?;
+                return Err(VijeoError::invalid("name", format!("{why}{tail}")));
+            }
+        }
+        self.save()?;
+        Ok((id, got))
+    }
+
+    /// Borra un panel del Navigator: Supr y Yes en la confirmación que nombra el panel.
+    fn delete_panel_item(&mut self, item: TreeItem, name: &str) -> VijeoResult<()> {
+        let tree = self.tree()?;
+        if !tree.press_delete(item) {
+            return Err(VijeoError::Internal(format!("no se pudo seleccionar «{name}» en el Navigator")));
+        }
+        let lower = name.to_lowercase();
+        let confirm = move |d: &UiDialog| sorted_buttons(d) == [IDYES, IDNO] && d.info.text.to_lowercase().contains(&lower);
+        let d = self.wait_dialog("borrar el panel", confirm)?;
+        d.click(IDYES);
+        self.wait_until("borrar el panel", self.t.call, |p| p.tree().ok().filter(|t| t.text(item).is_none()).map(|_| ()))
+    }
+
     /// Nodo del Navigator que agrupa los paneles base del target.
     fn base_panels_item(&self, tree: &RemoteTree, target: TreeItem) -> Option<TreeItem> {
         let mut level = vec![target];
@@ -843,6 +915,12 @@ impl Drop for UiProject {
     }
 }
 
+/// PanelID y nombre de la etiqueta de un panel base en el Navigator (`5: Panel5` → `(5, "Panel5")`).
+fn parse_panel_label(label: &str) -> Option<(u32, String)> {
+    let (id, name) = label.split_once(": ")?;
+    Some((id.trim().parse().ok()?, name.trim().to_owned())).filter(|(_, n)| !n.is_empty())
+}
+
 /// Etiqueta de un nodo del Navigator que es `name`: los paneles base llevan delante su número (`1: Start`).
 fn navigator_label_is(label: &str, name: &str) -> bool {
     let bare = match label.split_once(": ") {
@@ -926,6 +1004,16 @@ mod tests {
         assert!(navigator_label_is("Carpeta", "carpeta"));
         assert!(!navigator_label_is("1: Start", "1"));
         assert!(!navigator_label_is("A: Start", "Start"));
+    }
+
+    #[test]
+    fn panel_labels() {
+        assert_eq!(parse_panel_label("5: Panel5"), Some((5, "Panel5".to_owned())));
+        assert_eq!(parse_panel_label("61: iEM_Energy"), Some((61, "iEM_Energy".to_owned())));
+        assert_eq!(parse_panel_label("12: Mot ores"), Some((12, "Mot ores".to_owned())));
+        assert_eq!(parse_panel_label("Base Panels"), None);
+        assert_eq!(parse_panel_label("A: Start"), None);
+        assert_eq!(parse_panel_label("7: "), None);
     }
 
     #[test]

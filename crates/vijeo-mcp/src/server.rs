@@ -42,6 +42,7 @@ const TOOL_CAPS: &[(&str, Capability)] = &[
     ("project_cross_references", Capability::CrossReferences),
     ("script_lint", Capability::ScriptLint),
     ("project_goto", Capability::PanelOpen),
+    ("panel_create", Capability::PanelCreate),
     ("xml_validate", Capability::XmlValidate),
     ("variables_generate_csv", Capability::VariableCsv),
     ("variables_import", Capability::VariableImport),
@@ -74,6 +75,9 @@ del proyecto (Export Project, unos segundos la primera vez; se reutiliza mientra
 Necesitan SupportsXMLImportExport=1 en el registro de Vijeo.
 - project_export_xml escribe el XML completo del proyecto (.vxml, public.xsd: pantallas, objetos, animaciones, \
 acciones, variables, alarmas…) con sus imágenes. No hay herramienta para importarlo.
+- panel_create crea un panel base vacío en un target (con el nombre pedido; Vijeo le da el siguiente PanelID) y lo \
+deja abierto; luego panel_insert le pone objetos. Como project_goto, no funciona tras un project_build en la misma \
+instancia.
 - Pantallas (paneles base de un proyecto abierto), con el portapapeles de Vijeo como Copiar/Pegar: panel_objects \
 lista los objetos (ruta Grupo/Objeto, tipo, posición absoluta, textos y variables; de los smart objects, sus \
 propiedades); panel_edit renombra, mueve, redimensiona, cambia textos, sustituye variables (Vijeo las vuelve a \
@@ -322,6 +326,15 @@ pub struct GotoParams {
     pub target: String,
     /// Panel base: ruta de panel_list (`BP:\Carpeta\Panel`), ruta sin `BP:\` o sólo el nombre si no se repite.
     pub panel: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PanelCreateParams {
+    pub project: u32,
+    pub target: String,
+    /// Nombre del panel nuevo (por defecto, el `Panel<n>` que le dé Vijeo). No puede repetir el de otro panel base.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -790,6 +803,13 @@ impl VijeoServer {
     #[tool(annotations(destructive_hint = false, idempotent_hint = true, open_world_hint = false))]
     async fn project_goto(&self, Parameters(p): Parameters<GotoParams>) -> ToolResult<GotoOut> {
         self.blocking(move |b| Ok(GotoOut { opened: ops(b.targets(), Capability::PanelOpen, b)?.open_panel(ProjectId(p.project), &p.target, &p.panel)? })).await
+    }
+
+    /// Crea un panel base vacío en el target (New Panel del Navigator) y lo deja abierto en Vijeo. Vijeo le da el
+    /// siguiente PanelID libre. Después: panel_insert para ponerle objetos y project_save.
+    #[tool(annotations(destructive_hint = false, idempotent_hint = false, open_world_hint = false))]
+    async fn panel_create(&self, Parameters(p): Parameters<PanelCreateParams>) -> ToolResult<CreatedPanel> {
+        self.blocking(move |b| ops(b.targets(), Capability::PanelCreate, b)?.create_panel(ProjectId(p.project), &p.target, p.name.as_deref())).await
     }
 
     /// Valida un XML de proyecto (.vxml) contra el public.xsd de la instalación, sin Vijeo. Devuelve los errores con

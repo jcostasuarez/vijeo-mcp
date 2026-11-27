@@ -1,0 +1,51 @@
+# Al publicar un release (desde la web o con scripts\release.ps1 -Publish), compila vijeo-mcp para Windows x64
+# con el mismo script de empaquetado y adjunta al release dist\vijeo-mcp-<versión>.zip y su .sha256.
+# A mano (Actions › Release assets › Run workflow) rehace los assets de un tag que ya tenga release.
+name: Release assets
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag del release (p. ej. v0.1.0)
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-assets-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Comprobar que el tag coincide con Cargo.toml
+        shell: pwsh
+        run: |
+          $m = Select-String -Path Cargo.toml -Pattern '^\s*version\s*=\s*"([^"]+)"' | Select-Object -First 1
+          $version = $m.Matches[0].Groups[1].Value
+          if ($env:TAG -ne "v$version") { throw "El tag $env:TAG no coincide con la versión de Cargo.toml ($version)." }
+
+      # Sin -SkipTests: corre las unitarias y las de humo (ninguna necesita Vijeo instalado).
+      - name: Compilar y empaquetar
+        shell: pwsh
+        run: ./scripts/release.ps1
+
+      - name: Adjuntar al release
+        shell: pwsh
+        run: gh release upload $env:TAG (Get-ChildItem dist/*.zip, dist/*.zip.sha256).FullName --clobber --repo $env:GITHUB_REPOSITORY

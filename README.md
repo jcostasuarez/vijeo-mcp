@@ -8,7 +8,18 @@ Servidor MCP (stdio, Rust + `rmcp` 3.8) para pilotar **Vijeo-Designer** como lo 
 cargo build --release -p vijeo-mcp
 ```
 
-Binario: `target\release\vijeo-mcp.exe`. Requiere Windows con Vijeo-Designer instalado (6.3.0.103 verificado) y una sesión de escritorio: cada proyecto se abre en una ventana visible de Vijeo.
+Binario: `target\release\vijeo-mcp.exe`. Requiere Windows con Vijeo-Designer instalado (6.3.0.103 verificado) y una sesión de escritorio: cada proyecto se abre en una ventana visible de Vijeo. Se enlaza con el CRT estático (`.cargo\config.toml`), así que no necesita el redistribuible de Visual C++ x64.
+
+### Releases
+
+Cada release publicado en GitHub lleva `vijeo-mcp-<versión>.zip` (exe x64 + README) y su `.sha256`. Los genera el workflow [`release.yml`](.github/workflows/release.yml) al publicar el release, también si se crea desde la web. El tag tiene que ser `v<versión>` de `Cargo.toml`. Desde Actions › Release assets › Run workflow se rehacen los assets de un tag que ya tenga release.
+
+```powershell
+.\scripts\release.ps1                 # pruebas + compilación + dist\vijeo-mcp-<versión>.zip, en local
+.\scripts\release.ps1 -Publish        # además crea el release v<versión>; GitHub Actions adjunta los assets
+```
+
+Antes de publicar hay que subir la versión en `[workspace.package]` de `Cargo.toml`. Si el MCP está usando `target\release\vijeo-mcp.exe`, el script lo renombra a `vijeo-mcp.run-HHMMSS.exe` antes de compilar.
 
 ## Registrar en Claude Code
 

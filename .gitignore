@@ -1,5 +1,6 @@
 # Compilación
 /target/
+/dist/
 /tools/vdobj/target/
 /*.log
 *.mcp-tmp

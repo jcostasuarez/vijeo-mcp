@@ -1,0 +1,4 @@
+# CRT estático: el .exe corre sin instalar el redistribuible de Visual C++ x64 (Vijeo-Designer, de 32 bits,
+# sólo instala el de x86).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

@@ -16,7 +16,7 @@ use vijeo_core::*;
 use vijeo_ui::process;
 
 use crate::catalog::{split_hmi_type, Catalog};
-use crate::ui_project::{self, NewTarget, Timeouts, UiProject};
+use crate::ui_project::{self, NewEquipment, NewTarget, Timeouts, UiProject};
 use crate::{dataconv, drivers, feedback, lint, objects, panel_ops, probe, reports, script, swx, toolchest, validate, varcsv, vdz, vxml, xsd};
 use crate::widgets::build::{self, RefKind};
 
@@ -221,6 +221,7 @@ impl Vd63Backend {
             Capability::ScriptLint,
             Capability::PanelOpen,
             Capability::PanelCreate,
+            Capability::EquipmentAdd,
             Capability::VariableImport,
             // Formato binario de los objetos y comandos del editor verificados con 6.3 (inventario §13.2).
             Capability::PanelObjects,
@@ -837,14 +838,7 @@ impl TargetOps for Vd63Backend {
         self.require(Capability::PanelCreate)?;
         let name = name.map(str::trim).filter(|n| !n.is_empty());
         if let Some(n) = name {
-            validate::name("name", n)?;
-            // Convención de nombres de Vijeo (error 2003 «doesn't follow naming convention», verificado con
-            // «Mot ores», «1Motor», «Motor-2» y «_Motor»): una letra y luego letras, dígitos o «_». Lo demás lo decide Vijeo.
-            let mut cs = n.chars();
-            let ok = cs.next().is_some_and(|c| c.is_ascii_alphabetic()) && cs.all(|c| c.is_ascii_alphanumeric() || c == '_');
-            if !ok {
-                return Err(VijeoError::invalid("name", format!("«{n}» no sigue la convención de nombres de Vijeo: una letra y luego letras, dígitos o «_», sin espacios ni guiones")));
-            }
+            validate::identifier("name", n)?;
         }
         let inst = self.get(p)?;
         let t = select_target(self.targets_of(&inst)?, Some(target))?.remove(0).name;
@@ -857,6 +851,61 @@ impl TargetOps for Vd63Backend {
         let (panel_id, got) = inst.with_ui("crear el panel", |u| u.new_panel(&t, name))?;
         inst.mark_unsaved();
         Ok(CreatedPanel { path: format!("BP:\\{got}"), name: got, panel_id })
+    }
+
+    fn add_equipment(&self, req: &EquipmentAddRequest) -> VijeoResult<EquipmentAddResult> {
+        self.require(Capability::EquipmentAdd)?;
+        let opt = |s: &Option<String>| s.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
+        let (name, driver_name) = (opt(&req.name), opt(&req.driver_name));
+        for (field, v) in [("name", &name), ("driver_name", &driver_name)] {
+            if let Some(v) = v {
+                validate::identifier(field, v)?;
+            }
+        }
+        let driver = req.driver.trim();
+        if driver.is_empty() {
+            return Err(VijeoError::invalid("driver", "no puede estar vacío"));
+        }
+        let ip = match opt(&req.ip_address) {
+            Some(s) => Some(s.parse::<std::net::Ipv4Addr>().map_err(|_| VijeoError::invalid("ip_address", format!("«{s}» no es una IPv4")))?.octets()),
+            None => None,
+        };
+        let inst = self.get(req.project)?;
+        let t = select_target(self.targets_of(&inst)?, Some(&req.target))?.remove(0);
+        if let Some(n) = &name {
+            if let Some(d) = t.drivers.iter().find(|d| d.equipment.iter().any(|e| e.name.eq_ignore_ascii_case(n))) {
+                return Err(VijeoError::invalid("name", format!("ya hay un equipo «{n}» (driver «{}»)", d.name)));
+            }
+        }
+        let existing = t.drivers.iter().find(|d| d.name.eq_ignore_ascii_case(driver)).map(|d| d.name.clone());
+        if let (Some(e), Some(_)) = (&existing, &driver_name) {
+            return Err(VijeoError::invalid("driver_name", format!("«{e}» ya existe: driver_name sólo sirve al crear un driver")));
+        }
+        if let Some(n) = &driver_name {
+            if t.drivers.iter().any(|d| d.name.eq_ignore_ascii_case(n)) {
+                return Err(VijeoError::invalid("driver_name", format!("ya hay un driver «{n}»")));
+            }
+        }
+        let spec = NewEquipment {
+            existing_driver: existing.clone(),
+            manufacturer: opt(&req.manufacturer).unwrap_or_else(|| "Schneider Electric Industries SAS".into()),
+            driver: driver.to_owned(),
+            equipment_type: opt(&req.equipment_type),
+            driver_name,
+            name,
+            ip,
+            unit_id: req.unit_id,
+        };
+        let (drv, eq) = inst.with_ui("añadir el equipo", |u| u.add_equipment(&t.name, &spec))?;
+        inst.mark_unsaved();
+        let after = select_target(self.targets_of(&inst)?, Some(&t.name))?.remove(0);
+        let config = after.drivers.into_iter().find(|d| d.name.eq_ignore_ascii_case(&drv)).ok_or_else(|| VijeoError::Internal(format!("el driver «{drv}» no aparece en la configuración del proyecto")))?;
+        let mut notes = Vec::new();
+        if existing.is_none() {
+            notes.push("el driver nuevo quedó con su configuración por defecto (puerto serie, velocidad…): cámbiala en Vijeo si hace falta".into());
+        }
+        notes.push("el proyecto queda con cambios sin guardar en el .vdz: project_save para conservarlos".into());
+        Ok(EquipmentAddResult { target: t.name, created_driver: existing.is_none(), equipment: eq, driver: config, notes })
     }
 }
 
@@ -1307,6 +1356,20 @@ impl Vd63Backend {
     /// (diagnóstico para las pruebas en vivo; los diálogos se cancelan).
     pub fn probe_command(&self, p: ProjectId, target: &str, node: &str, cmd: u16) -> VijeoResult<Vec<String>> {
         self.get(p)?.with_ui("probar un comando", |u| u.probe_command(target, node, cmd))
+    }
+
+    #[doc(hidden)]
+    pub fn cancel_dialogs(&self, p: ProjectId) -> VijeoResult<()> {
+        self.get(p)?.with_ui("cancelar diálogos", |u| {
+            u.cancel_dialogs();
+            Ok(())
+        })
+    }
+
+    /// Diagnóstico (pruebas en vivo): ver `UiProject::probe_node_command`.
+    #[doc(hidden)]
+    pub fn probe_node_command(&self, p: ProjectId, target: &str, path: &[&str], cmd: u16) -> VijeoResult<Vec<String>> {
+        self.get(p)?.with_ui("probar un comando", |u| u.probe_node_command(target, path, cmd))
     }
 
     /// Navigator bajo un target (`depth` niveles), para diagnosticar `open_panel` en las pruebas en vivo.

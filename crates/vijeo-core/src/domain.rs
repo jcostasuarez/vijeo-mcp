@@ -360,6 +360,48 @@ pub struct IoEquipmentConfig {
     pub scan_groups: Vec<String>,
 }
 
+/// Equipo nuevo (PLC, variador…) de `equipment_add`, en un target de un proyecto abierto.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct EquipmentAddRequest {
+    pub project: ProjectId,
+    pub target: String,
+    /// Driver: el nombre de uno que ya tiene el target (`ModbusTCP`: el equipo se añade a él) o, para crear uno nuevo,
+    /// el driver como lo muestra New Driver de Vijeo (`Modbus TCP`, `Modbus (RTU)`, `XWAY TCP/IP`, `SIMATIC S7 Ethernet`…;
+    /// vale una parte única del texto). Un driver que ya está en el target no sale en New Driver. Si no se encuentra, el
+    /// error lista los que ofrece Vijeo para ese fabricante.
+    pub driver: String,
+    /// Fabricante como en New Driver (por defecto `Schneider Electric Industries SAS`). Sólo para un driver nuevo.
+    #[serde(default)]
+    pub manufacturer: Option<String>,
+    /// Tipo de equipo de la lista de Vijeo (`Modbus Equipment`); por defecto, el primero.
+    #[serde(default)]
+    pub equipment_type: Option<String>,
+    /// Nombre del equipo (por defecto el de Vijeo, `ModbusEquipment01`…).
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Nombre del driver nuevo (por defecto el de Vijeo, `ModbusTCPIP01`…). Sólo al crear un driver.
+    #[serde(default)]
+    pub driver_name: Option<String>,
+    /// IPv4 del equipo (equipos de red como Modbus TCP).
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    /// Unit ID (Modbus TCP).
+    #[serde(default)]
+    pub unit_id: Option<u8>,
+}
+
+/// Resultado de `equipment_add`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct EquipmentAddResult {
+    pub target: String,
+    /// Si se creó el driver (o el equipo se añadió a uno que ya estaba).
+    pub created_driver: bool,
+    pub equipment: String,
+    /// El driver con todos sus equipos, como queda en la copia de trabajo (como en target_config).
+    pub driver: IoDriverConfig,
+    pub notes: Vec<String>,
+}
+
 /// Cambios de `target_config_set`. Lo que no se indica se deja como está.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct TargetConfigChanges {

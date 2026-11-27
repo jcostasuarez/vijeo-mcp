@@ -28,6 +28,20 @@ pub fn name(field: &str, value: &str) -> VijeoResult<()> {
     Ok(())
 }
 
+/// Nombre de objeto del proyecto (panel, driver, equipo) con la convención de Vijeo: una letra y luego letras,
+/// dígitos o `_` (si no, Vijeo da el error 2003 «doesn't follow naming convention»: verificado con paneles base
+/// llamados «Mot ores», «1Motor», «Motor-2» y «_Motor»).
+pub fn identifier(field: &str, value: &str) -> VijeoResult<()> {
+    name(field, value)?;
+    let mut cs = value.chars();
+    let ok = cs.next().is_some_and(|c| c.is_ascii_alphabetic()) && cs.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if ok {
+        Ok(())
+    } else {
+        Err(VijeoError::invalid(field, format!("«{value}» no sigue la convención de nombres de Vijeo: una letra y luego letras, dígitos o «_», sin espacios ni guiones")))
+    }
+}
+
 /// Normaliza una ruta absoluta sin tocar el disco (resuelve `.` y `..`).
 fn lexical(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();

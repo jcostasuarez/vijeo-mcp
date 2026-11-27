@@ -764,6 +764,85 @@ mod live {
         std::fs::copy(&csv, std::env::temp_dir().join("vijeo-mcp-live").join("ultimo-import.csv")).ok();
     }
 
+    /// equipment_add sobre el ejemplo Modbus (driver ModbusTCP con M221_Controller): un PLC más en ModbusTCP con IP y
+    /// Unit ID, un driver Modbus (RTU) nuevo con nombres, errores (IP en un equipo serie: se deshace; nombre no válido;
+    /// driver que no existe; nombre repetido), la copia guardada tiene las direcciones y compila como el original. Y en
+    /// un proyecto nuevo, un driver Modbus TCP desde cero.
+    #[test]
+    fn live_equipment_add() {
+        use vijeo_core::{EquipmentAddRequest, EquipmentAddResult};
+        let Some(src) = modbus() else { return };
+        let b = backend();
+        let base = b.build().unwrap().build_file(&src, None).unwrap();
+        let errs = |m: &[vijeo_core::BuildMessage]| {
+            let mut v: Vec<_> = m.iter().filter(|m| m.severity == vijeo_core::MessageSeverity::Error).map(|m| m.code).collect();
+            v.sort();
+            v
+        };
+        let tops = b.targets().unwrap();
+        let add = |v: serde_json::Value| -> vijeo_core::VijeoResult<EquipmentAddResult> {
+            let req: EquipmentAddRequest = serde_json::from_value(v).unwrap();
+            let r = tops.add_equipment(&req);
+            eprintln!("{r:#?}");
+            r
+        };
+        let info = b.projects().unwrap().open(&src).unwrap();
+        let (p, target) = (info.id, info.targets[0].name.clone());
+
+        let r = add(serde_json::json!({"project": p.0, "target": target, "driver": "modbustcp", "name": "PLC2", "ip_address": "172.20.10.170", "unit_id": 3})).unwrap();
+        assert!(!r.created_driver);
+        assert_eq!((r.equipment.as_str(), r.driver.name.as_str()), ("PLC2", "ModbusTCP"));
+        let e = r.driver.equipment.iter().find(|e| e.name == "PLC2").unwrap();
+        assert_eq!((e.ip_address.as_deref(), e.unit_id, e.port), (Some("172.20.10.170"), Some(3), Some(502)), "{e:?}");
+        assert!(r.driver.equipment.iter().any(|e| e.name == "M221_Controller"));
+
+        let r = add(serde_json::json!({"project": p.0, "target": target, "driver": "Modbus (RTU)", "driver_name": "SerieRTU", "name": "Variador1"})).unwrap();
+        assert!(r.created_driver);
+        assert_eq!((r.driver.name.as_str(), r.equipment.as_str()), ("SerieRTU", "Variador1"));
+        // `Schneider_ModBus_PDL_ModBus_SIO`.
+        assert!(r.driver.driver_id.as_deref().is_some_and(|d| d.to_lowercase().contains("modbus") && d.contains("SIO")), "{:?}", r.driver.driver_id);
+
+        let count = || -> usize { b.config().unwrap().project_config(p, Some(&target)).map(|c| c.targets[0].drivers.iter().map(|d| d.equipment.len()).sum()).unwrap_or(0) };
+        let before = count();
+        let e = add(serde_json::json!({"project": p.0, "target": target, "driver": "SerieRTU", "name": "Variador2", "ip_address": "10.0.0.1"})).unwrap_err();
+        assert_eq!(e.code(), "invalid_argument", "{e}");
+        for (v, field) in [
+            (serde_json::json!({"project": p.0, "target": target, "driver": "ModbusTCP", "name": "PLC 3"}), "name"),
+            (serde_json::json!({"project": p.0, "target": target, "driver": "zzz-no-existe"}), "driver"),
+            (serde_json::json!({"project": p.0, "target": target, "driver": "ModbusTCP", "name": "plc2"}), "name"),
+            (serde_json::json!({"project": p.0, "target": target, "driver": "ModbusTCP", "ip_address": "300.1.1.1"}), "ip_address"),
+        ] {
+            let e = add(v).unwrap_err();
+            assert!(e.to_string().contains(field), "{field}: {e}");
+        }
+        assert_eq!(count(), before, "un error dejó equipos de más");
+
+        let dir = work_dir("equipment_add");
+        let vdz = dir.join("McpEquipos.vdz");
+        b.projects().unwrap().save(p, Some(&vdz), true).unwrap();
+        b.projects().unwrap().close(p, false).unwrap();
+        let cfg = b.config().unwrap().file_config(&vdz, None).unwrap();
+        eprintln!("{:#?}", cfg.targets[0].drivers);
+        let plc2 = cfg.targets[0].drivers.iter().flat_map(|d| &d.equipment).find(|e| e.name == "PLC2").expect("PLC2 en el .vdz");
+        assert_eq!((plc2.ip_address.as_deref(), plc2.unit_id), (Some("172.20.10.170"), Some(3)));
+        assert!(cfg.targets[0].drivers.iter().any(|d| d.name == "SerieRTU" && d.equipment.iter().any(|e| e.name == "Variador1")));
+        let built = b.build().unwrap().build_file(&vdz, None).unwrap();
+        eprintln!("original: {:?}\ncopia: {:?}", base.messages, built.messages);
+        assert_eq!(errs(&built.messages), errs(&base.messages));
+
+        // Proyecto nuevo: Modbus TCP desde cero (New Driver lo ofrece porque el target no lo tiene).
+        let nuevo = dir.join("McpNuevoEquipos.vdz");
+        let model: vijeo_core::ModelSelector = serde_json::from_value(serde_json::json!({"model": "HMIGTO5310"})).unwrap();
+        let p2 = b.projects().unwrap().new_project("McpNuevoEquipos", &nuevo, true, "HMI1", &model).unwrap().id;
+        let r = add(serde_json::json!({"project": p2.0, "target": "HMI1", "driver": "Modbus TCP", "driver_name": "Red", "name": "PLC1", "ip_address": "192.168.1.10", "unit_id": 1}));
+        let r = r.unwrap();
+        assert!(r.created_driver);
+        let e = &r.driver.equipment[0];
+        assert_eq!((r.driver.name.as_str(), e.name.as_str(), e.ip_address.as_deref(), e.unit_id), ("Red", "PLC1", Some("192.168.1.10"), Some(1)), "{:?}", r.driver);
+        b.projects().unwrap().close(p2, true).unwrap();
+        b.shutdown().unwrap();
+    }
+
     /// panel_create sobre el ejemplo Hardwired (paneles base 1-4, 11, 12, 21, 51-54, 61): sin nombre (Panel5), con
     /// nombre, nombre repetido (no se crea nada) y nombres raros (o se crean con ese nombre o no queda ningún panel de
     /// más). Luego se le ponen objetos a «Motores» (un botón que vuelve a Start) y la copia compila como el original.

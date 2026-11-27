@@ -41,6 +41,8 @@ pub enum Capability {
     PanelOpen,
     /// Crear paneles base nuevos en un proyecto abierto (New Panel en el Navigator).
     PanelCreate,
+    /// Añadir drivers y equipos de comunicación a un target de un proyecto abierto (New Driver en el Navigator).
+    EquipmentAdd,
     /// Importar variables de un CSV en un target de un proyecto abierto (Variables › Import Variables).
     VariableImport,
     /// Leer, editar e insertar objetos en los paneles base de un proyecto abierto (portapapeles de Vijeo).
@@ -50,7 +52,7 @@ pub enum Capability {
 }
 
 impl Capability {
-    pub const ALL: [Capability; 20] = [
+    pub const ALL: [Capability; 21] = [
         Capability::ProjectLifecycle,
         Capability::TargetManage,
         Capability::Build,
@@ -68,6 +70,7 @@ impl Capability {
         Capability::DataConvert,
         Capability::PanelOpen,
         Capability::PanelCreate,
+        Capability::EquipmentAdd,
         Capability::VariableImport,
         Capability::PanelObjects,
         Capability::Toolchest,
@@ -92,6 +95,7 @@ impl Capability {
             Capability::DataConvert => "data_convert",
             Capability::PanelOpen => "panel_open",
             Capability::PanelCreate => "panel_create",
+            Capability::EquipmentAdd => "equipment_add",
             Capability::VariableImport => "variable_import",
             Capability::PanelObjects => "panel_objects",
             Capability::Toolchest => "toolchest",

@@ -124,6 +124,17 @@ fn smoke_list_and_catalog() {
     assert!(err && msg.as_str().unwrap().contains("[invalid_argument]"), "{msg}");
     let (err, msg) = c.call("panel_create", json!({"project": 99, "target": "HMI1"}));
     assert!(err && msg.as_str().unwrap().contains("[project_not_found]"), "{msg}");
+    assert!(names.contains(&"equipment_add"));
+    for args in [
+        json!({"project": 99, "target": "HMI1", "driver": "Modbus TCP", "name": "PLC 1"}),
+        json!({"project": 99, "target": "HMI1", "driver": "Modbus TCP", "ip_address": "192.168.1"}),
+        json!({"project": 99, "target": "HMI1", "driver": " "}),
+    ] {
+        let (err, msg) = c.call("equipment_add", args);
+        assert!(err && msg.as_str().unwrap().contains("[invalid_argument]"), "{msg}");
+    }
+    let (err, msg) = c.call("equipment_add", json!({"project": 99, "target": "HMI1", "driver": "Modbus TCP"}));
+    assert!(err && msg.as_str().unwrap().contains("[project_not_found]"), "{msg}");
 
     let (err, status) = c.call("vijeo_status", json!({}));
     assert!(!err, "{status}");

@@ -123,6 +123,36 @@ impl UiDialog {
             && notify(CBN_CLOSEUP).is_some()
     }
 
+    /// Pone la dirección del control de IP `id` (`SysIPAddress32`): `IPM_SETADDRESS` lleva la dirección en el
+    /// propio mensaje, así que funciona entre procesos.
+    pub fn set_ip(&self, id: i32, ip: [u8; 4]) -> bool {
+        let Some(c) = self.control(id, "SysIPAddress32") else { return false };
+        let packed = u32::from_be_bytes(ip) as isize;
+        send(c, IPM_SETADDRESS, 0, packed).is_some()
+    }
+
+    /// Elementos de la lista `id` (`LB_GETTEXT`, traducido entre procesos si la lista guarda cadenas).
+    pub fn list_items(&self, id: i32) -> Vec<String> {
+        let Some(c) = self.control(id, "ListBox") else { return Vec::new() };
+        let n = send(c, LB_GETCOUNT, 0, 0).unwrap_or(0).max(0) as usize;
+        (0..n)
+            .map(|i| {
+                let len = send(c, LB_GETTEXTLEN, i, 0).unwrap_or(0).max(0) as usize;
+                let mut buf = vec![0u16; len + 1];
+                let got = send(c, LB_GETTEXT, i, buf.as_mut_ptr() as isize).unwrap_or(0).max(0) as usize;
+                String::from_utf16_lossy(&buf[..got.min(len)])
+            })
+            .collect()
+    }
+
+    /// Elige el elemento `index` de la lista `id` como el usuario: `LB_SETCURSEL` y la notificación
+    /// `LBN_SELCHANGE` al diálogo (sin ella el diálogo no se entera, como con los combos).
+    pub fn list_select(&self, id: i32, index: usize) -> bool {
+        let Some(c) = self.control(id, "ListBox") else { return false };
+        let d = hwnd(self.hwnd);
+        send(c, LB_SETCURSEL, index, 0).is_some_and(|r| r == index as isize) && send(d, WM_COMMAND, ((LBN_SELCHANGE as usize) << 16) | (id as u16 as usize), c.0 as isize).is_some()
+    }
+
     /// Pulsa el botón `id` con `WM_COMMAND BN_CLICKED`. Los diálogos de fichero no atienden `BM_CLICK`
     /// si no son la ventana activa; los de Vijeo, al revés (ver [`UiDialog::click`]).
     pub fn press(&self, id: i32) -> bool {
@@ -130,6 +160,14 @@ impl UiDialog {
         unsafe { PostMessageW(Some(hwnd(self.hwnd)), WM_COMMAND, WPARAM(id as u16 as usize), LPARAM(b.0 as isize)) }.is_ok()
     }
 }
+
+/// `WM_USER + 101`.
+const IPM_SETADDRESS: u32 = 0x0465;
+const LB_SETCURSEL: u32 = 0x0186;
+const LB_GETTEXT: u32 = 0x0189;
+const LB_GETTEXTLEN: u32 = 0x018A;
+const LB_GETCOUNT: u32 = 0x018B;
+const LBN_SELCHANGE: u32 = 1;
 
 /// `SendMessageTimeout` (5 s, sin esperar si el otro hilo está colgado): `None` si no respondió.
 fn send(h: HWND, msg: u32, w: usize, l: isize) -> Option<isize> {

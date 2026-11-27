@@ -24,8 +24,20 @@ pub struct ProjectInfo {
     /// detecta, pero project_save también lo guarda).
     pub dirty: bool,
     pub targets: Vec<TargetInfo>,
-    /// Qué hizo Vijeo con la copia al abrirla (actualizar la versión, convertir un modelo no soportado…).
+    /// Qué hizo Vijeo con la copia al abrirla (actualizar la versión, convertir un modelo no soportado…) y, al
+    /// crear o guardar, dónde quedó el `.vdz`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+/// `.vdz` abierto en Vijeo para el usuario con `project_show_in_vijeo`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ShownProject {
+    pub path: PathBuf,
+    /// Nombre con el que aparece en la lista de proyectos de Vijeo.
+    pub name: String,
+    /// Proceso de Vijeo-Frame lanzado (del usuario: el MCP no lo controla).
+    pub pid: u32,
     pub notes: Vec<String>,
 }
 

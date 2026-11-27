@@ -24,6 +24,7 @@ const TOOL_CAPS: &[(&str, Capability)] = &[
     ("project_save", Capability::ProjectLifecycle),
     ("project_close", Capability::ProjectLifecycle),
     ("project_rename", Capability::ProjectLifecycle),
+    ("project_show_in_vijeo", Capability::ProjectLifecycle),
     ("target_list", Capability::TargetManage),
     ("target_add", Capability::TargetManage),
     ("target_delete", Capability::TargetManage),
@@ -65,6 +66,9 @@ project_build/variable_* → project_save → project_close.
 (Vijeo-Manager\\MCP_TMP_*, se borra al cerrar); abrir tarda unos 10-30 s. El .vdz sólo cambia con project_save \
 (y con target_config_set, que no abre Vijeo).
 - Sólo se trabaja con .vdz y nunca dentro del workspace Vijeo-Manager ni de otras carpetas protegidas.
+- Un proyecto creado o guardado con el MCP es un .vdz en la ruta indicada: **no sale en la lista de proyectos de \
+Vijeo** (que es Vijeo-Manager) hasta abrirlo. Al terminar, dile al usuario la ruta del .vdz; si quiere verlo en \
+Vijeo, project_show_in_vijeo lo abre en una ventana suya (Vijeo lo importa a su lista).
 - Los modelos HMI se eligen con catalog_list_models (sólo los `creatable` se pueden crear; `probe` indica que \
 se comprobó creando el target en esta instalación); project_new exige el primer target.
 - project_build/target_build devuelven el texto de cada error y warning (con `path` compilan una copia de un \
@@ -179,6 +183,16 @@ pub struct ProjectNewParams {
 pub struct ProjectOpenParams {
     /// Ruta absoluta de un .vdz.
     pub path: PathBuf,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ProjectShowParams {
+    /// Ruta absoluta del .vdz que se abre (o `project`).
+    #[serde(default)]
+    pub path: Option<PathBuf>,
+    /// Proyecto abierto en el MCP: se abre su .vdz tal como está guardado (o `path`).
+    #[serde(default)]
+    pub project: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -625,6 +639,15 @@ impl VijeoServer {
     #[tool(annotations(destructive_hint = false, open_world_hint = false))]
     async fn project_open(&self, Parameters(p): Parameters<ProjectOpenParams>) -> ToolResult<ProjectInfo> {
         self.blocking(move |b| ops(b.projects(), Capability::ProjectLifecycle, b)?.open(&p.path)).await
+    }
+
+    /// Abre un .vdz en una ventana de Vijeo para el usuario, como el doble clic: Vijeo lo importa a su lista de
+    /// proyectos (Vijeo-Manager) y desde entonces lo ve ahí. Úsalo cuando el usuario quiera ver en Vijeo un proyecto
+    /// creado o guardado con el MCP (los .vdz del MCP no salen en esa lista hasta abrirlos). La ventana es del usuario:
+    /// el MCP no la controla. Se niega si Vijeo ya tiene un proyecto con ese nombre.
+    #[tool(annotations(destructive_hint = false, idempotent_hint = false, open_world_hint = false))]
+    async fn project_show_in_vijeo(&self, Parameters(p): Parameters<ProjectShowParams>) -> ToolResult<ShownProject> {
+        self.blocking(move |b| ops(b.projects(), Capability::ProjectLifecycle, b)?.show_in_vijeo(p.path.as_deref(), p.project.map(ProjectId))).await
     }
 
     /// Nombre, ruta, cambios sin guardar y targets de un proyecto abierto.

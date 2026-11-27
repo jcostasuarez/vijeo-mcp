@@ -697,7 +697,12 @@ impl ProjectOps for Vd63Backend {
             self.discard(&inst);
             return Err(e);
         }
-        self.info_of(&inst)
+        let mut info = self.info_of(&inst)?;
+        info.notes = saved_notes(&dest, name);
+        info.notes.push(
+            "queda abierto en el MCP (copia de trabajo temporal Vijeo-Manager\\MCP_TMP_*, que en la lista de Vijeo sale con ese nombre y se borra con project_close)".into(),
+        );
+        Ok(info)
     }
 
     fn open(&self, vdz: &Path) -> VijeoResult<ProjectInfo> {
@@ -740,9 +745,12 @@ impl ProjectOps for Vd63Backend {
             u.save()?;
             u.package(&dest, &name)
         })?;
+        let notes = saved_notes(&dest, &name);
         *inst.path.lock().unwrap() = Some(dest);
         inst.unsaved.store(false, Ordering::SeqCst);
-        self.info_of(&inst)
+        let mut info = self.info_of(&inst)?;
+        info.notes = notes;
+        Ok(info)
     }
 
     fn close(&self, p: ProjectId, discard: bool) -> VijeoResult<()> {
@@ -775,6 +783,48 @@ impl ProjectOps for Vd63Backend {
         }
         self.info_of(&inst)
     }
+
+    fn show_in_vijeo(&self, path: Option<&Path>, project: Option<ProjectId>) -> VijeoResult<ShownProject> {
+        self.require(Capability::ProjectLifecycle)?;
+        let mut notes = Vec::new();
+        let (field, vdz) = match (path, project) {
+            (Some(p), None) => ("path", p.to_path_buf()),
+            (None, Some(id)) => {
+                let inst = self.get(id)?;
+                let p = inst.path().ok_or_else(|| VijeoError::invalid("project", "el proyecto no tiene .vdz todavía: guárdalo con project_save"))?;
+                if inst.unsaved.load(Ordering::SeqCst) {
+                    notes.push("el proyecto tiene cambios del MCP sin guardar, que no están en el .vdz (project_save antes para verlos)".to_owned());
+                }
+                ("project", p)
+            }
+            _ => return Err(VijeoError::invalid("path", "indica path (un .vdz) o project (un proyecto abierto), uno de los dos")),
+        };
+        let vdz = validate::vdz_path(field, &vdz, &self.protected)?;
+        if !vdz.is_file() {
+            return Err(VijeoError::invalid(field, format!("{} no existe", vdz.display())));
+        }
+        let name = swx::project_name(&vdz)?;
+        if self.workspace.join(&name).exists() {
+            return Err(VijeoError::Refused(format!(
+                "Vijeo ya tiene un proyecto «{name}» en su lista (Vijeo-Manager): al importar éste preguntaría si reemplazarlo. \
+                 Ábrelo desde Vijeo si es el mismo, o cambia el nombre (project_open + project_rename + project_save) y vuelve a intentarlo"
+            )));
+        }
+        let exe = self.inst.frame_dir.join("Vijeo-Frame.exe");
+        let pid = vijeo_ui::process::launch_detached(&exe, &[std::ffi::OsStr::new("/Import"), vdz.as_os_str()])?;
+        notes.insert(0, format!("Vijeo importa el proyecto a su lista de proyectos como «{name}» y lo abre en una ventana nueva, que es del usuario: el MCP no la controla ni la cierra"));
+        notes.push("lo que se cambie y guarde en esa ventana queda en la lista de Vijeo (Vijeo-Manager), no en el .vdz".to_owned());
+        Ok(ShownProject { path: vdz, name, pid, notes })
+    }
+}
+
+/// Notas de un proyecto recién guardado en un `.vdz`: dónde está y que Vijeo no lo lista hasta abrirlo.
+fn saved_notes(dest: &Path, name: &str) -> Vec<String> {
+    vec![format!(
+        "el proyecto «{name}» está en {}: Vijeo no lo muestra en su lista de proyectos (Vijeo-Manager) hasta abrir ese .vdz; \
+         project_show_in_vijeo lo abre en Vijeo para el usuario",
+        dest.display()
+    )]
 }
 
 impl TargetOps for Vd63Backend {

@@ -125,6 +125,9 @@ pub trait ProjectOps: Send + Sync {
     fn list(&self) -> Vec<ProjectSummary>;
     /// Cambia el nombre del proyecto (no el del `.vdz`).
     fn rename(&self, p: ProjectId, name: &str) -> VijeoResult<ProjectInfo>;
+    /// Abre un `.vdz` (`path`, o el de un proyecto abierto) en una ventana de Vijeo del usuario, como el doble clic:
+    /// Vijeo lo importa a su lista de proyectos. Se niega si ya hay uno con ese nombre en la lista.
+    fn show_in_vijeo(&self, path: Option<&Path>, project: Option<ProjectId>) -> VijeoResult<ShownProject>;
 }
 
 pub trait TargetOps: Send + Sync {

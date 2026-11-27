@@ -843,6 +843,28 @@ mod live {
         b.shutdown().unwrap();
     }
 
+    /// project_new/project_save dicen dónde quedó el .vdz, y project_show_in_vijeo se niega (sin lanzar Vijeo) con un
+    /// proyecto que se llama como uno de la lista de Vijeo («Samples», que trae la instalación en Vijeo-Manager).
+    #[test]
+    fn live_show_in_vijeo_refuses_existing_name() {
+        let Some(src) = sample() else { return };
+        let b = backend();
+        let projects = b.projects().unwrap();
+        let info = projects.open(&src).unwrap();
+        projects.rename(info.id, "Samples").unwrap();
+        let vdz = work_dir("show_in_vijeo").join("McpSamples.vdz");
+        let saved = projects.save(info.id, Some(&vdz), true).unwrap();
+        eprintln!("{:?}", saved.notes);
+        assert!(saved.notes.iter().any(|n| n.contains("McpSamples.vdz") && n.contains("project_show_in_vijeo")), "{:?}", saved.notes);
+        let e = projects.show_in_vijeo(None, Some(info.id)).unwrap_err();
+        eprintln!("{e}");
+        assert!(e.code() == "refused" && e.to_string().contains("«Samples»"), "{e}");
+        let e = projects.show_in_vijeo(Some(&vdz), None).unwrap_err();
+        assert_eq!(e.code(), "refused", "{e}");
+        projects.close(info.id, false).unwrap();
+        b.shutdown().unwrap();
+    }
+
     /// panel_create sobre el ejemplo Hardwired (paneles base 1-4, 11, 12, 21, 51-54, 61): sin nombre (Panel5), con
     /// nombre, nombre repetido (no se crea nada) y nombres raros (o se crean con ese nombre o no queda ningún panel de
     /// más). Luego se le ponen objetos a «Motores» (un botón que vuelve a Start) y la copia compila como el original.

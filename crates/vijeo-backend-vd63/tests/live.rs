@@ -991,6 +991,81 @@ mod live {
         }
         b.shutdown().unwrap();
     }
+
+    /// Display de texto (`string_display`) sobre la variable STRING `sRefStringForComErrCodes` del ejemplo
+    /// Modbus: uno de sólo lectura y otro con entrada. Se mira cómo lo exporta Vijeo y la copia guardada tiene que
+    /// compilar con los mismos errores que el original (2 errores, 2 warnings).
+    #[test]
+    fn live_string_display() {
+        use vijeo_core::{PanelInsertRequest, PanelObject};
+        let Some(src) = modbus() else { return };
+        fn find<'a>(objs: &'a [PanelObject], name: &str) -> Option<&'a PanelObject> {
+            objs.iter().find_map(|o| if o.name == name { Some(o) } else { find(&o.children, name) })
+        }
+        let b = backend();
+        let base = b.build().unwrap().build_file(&src, None).unwrap();
+        let errs = |m: &[vijeo_core::BuildMessage]| {
+            let mut v: Vec<_> = m.iter().filter(|m| m.severity == vijeo_core::MessageSeverity::Error).map(|m| m.code).collect();
+            v.sort();
+            v
+        };
+        let info = b.projects().unwrap().open(&src).unwrap();
+        let (p, target) = (info.id, info.targets[0].name.clone());
+        let v = "sRefStringForComErrCodes";
+        let ins: PanelInsertRequest = serde_json::from_value(serde_json::json!({
+            "project": p.0, "target": target, "panel": "Alarms",
+            "items": [
+                {"create": {"type": "string_display", "variable": v}, "x": 10, "y": 40, "name": "McpTxtRO"},
+                {"create": {"type": "string_display", "variable": v, "length": 20, "input": true, "plate_color": "FFFF00",
+                    "text_color": "0000FF", "font": "medium", "bold": true, "align": "left"},
+                 "x": 10, "y": 70, "width": 160, "height": 24, "name": "McpTxtIn"}
+            ]
+        }))
+        .unwrap();
+        let r = panels_insert(&b, &ins);
+        for (name, x, y, w, h) in [("McpTxtRO", 10, 40, 100, 20), ("McpTxtIn", 10, 70, 160, 24)] {
+            let o = find(&r.objects, name).unwrap_or_else(|| panic!("falta {name}"));
+            assert_eq!((o.kind.as_str(), o.left, o.top, o.width, o.height), ("DataDisplay", x, y, w, h), "{name}: {o:?}");
+            assert!(o.variables.iter().any(|x| x.contains(v)), "{name}: {o:?}");
+        }
+
+        let dir = work_dir("string_display");
+        let x = b.reports().unwrap().export_xml(p, &dir.join("xml"), true).unwrap();
+        let xml = std::fs::read_to_string(&x.path).unwrap();
+        let obj = |name: &str| -> String {
+            let at = xml.find(&format!("Name=\"{name}\"")).unwrap_or_else(|| panic!("{name} no está en el XML"));
+            let start = xml[..at].rfind('<').unwrap();
+            let tag: String = xml[start + 1..].chars().take_while(|c| c.is_alphanumeric()).collect();
+            let end = xml[start..].find(&format!("</{tag}>")).map(|e| start + e + tag.len() + 3).unwrap_or(start + 3000);
+            xml[start..end.min(xml.len())].to_owned()
+        };
+        let (ro, inp) = (obj("McpTxtRO"), obj("McpTxtIn"));
+        eprintln!("---- McpTxtRO\n{ro}\n---- McpTxtIn\n{inp}");
+        assert!(ro.starts_with("<StringDisplay") && ro.contains(&format!("Variable=\"{v}\"")), "{ro}");
+        assert!(ro.contains("DisplayLength=\"10\"") && ro.contains("HAlign=\"Center\"") && !ro.contains("<InputMode"), "{ro}");
+        assert!(inp.starts_with("<StringDisplay") && inp.contains(&format!("Variable=\"{v}\"")), "{inp}");
+        // El XML escribe el hex del COLORREF (0x00BBGGRR sin ceros a la izquierda): amarillo → FFFF, azul → FF0000.
+        for want in ["DisplayLength=\"20\"", "PlateColor=\"FFFF\"", "TextColor=\"FF0000\"", "HAlign=\"Left\"", "FontStyle=\"Bold\"",
+            "FontFace=\"GPFontModern8x13\"", "KeypadFormat=\"StringKeypad\""] {
+            assert!(inp.contains(want), "falta {want}: {inp}");
+        }
+
+        let vdz = dir.join("McpTexto.vdz");
+        b.projects().unwrap().save(p, Some(&vdz), true).unwrap();
+        b.projects().unwrap().close(p, false).unwrap();
+        let built = b.build().unwrap().build_file(&vdz, None).unwrap();
+        eprintln!("original: {:?}\ncopia: {:?}", base.messages, built.messages);
+        assert_eq!(errs(&built.messages), errs(&base.messages));
+        assert_eq!(built.warnings, base.warnings, "{:?}", built.messages);
+        b.shutdown().unwrap();
+    }
+
+    fn panels_insert(b: &std::sync::Arc<dyn vijeo_core::Backend>, ins: &vijeo_core::PanelInsertRequest) -> vijeo_core::PanelChangeResult {
+        let r = b.panels().unwrap().insert(ins).unwrap();
+        eprintln!("{:#?}\n{:?}\n{:?}", r.changes, r.warnings, r.notes);
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+        r
+    }
 }
 
 /// Lee todas las piezas de la Toolchest de la instalación (sin lanzar Vijeo): las que no tienen la

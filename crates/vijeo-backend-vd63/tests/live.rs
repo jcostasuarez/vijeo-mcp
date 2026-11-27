@@ -672,14 +672,63 @@ mod live {
             opened
         };
         assert!(probe("recién abierto"));
-        // Verificado (2026-11-25): tras un Build All la instancia ya no abre el diálogo (ni por el marco ni
-        // por la barra del Navigator, ni esperando, guardando o activando la vista del panel), y el Intro del
-        // Navigator tampoco abre paneles. Se deja registrado sin exigirlo.
+        // Tras un Build All Vijeo deja activa la Feedback Zone; hasta la tanda 25 el diálogo ya no se abría porque
+        // MFC descartaba el comando por deshabilitado. Con WM_MOUSEACTIVATE en RemoteTree::focus se abre.
         vijeo_core::BuildOps::build_project(&b, info.id).unwrap();
         let after_build = probe("tras Build All");
         ProjectOps::close(&b, info.id, true).unwrap();
-        eprintln!("tras Build All se abre: {after_build}");
+        assert!(after_build, "tras Build All el diálogo también tiene que abrirse");
     }
+
+    /// Varios Import Variables seguidos en la misma instancia y, después de un Build All, las herramientas del Navigator.
+    /// Antes fallaban: Vijeo activa la Feedback Zone al importar o compilar y MFC descartaba los comandos del Navigator
+    /// por deshabilitados; ahora `RemoteTree::focus` manda `WM_MOUSEACTIVATE` como un clic real.
+    #[test]
+    fn live_navigator_after_import_and_build() {
+        use vijeo_core::{BuildOps, FileOps, PanelKind, PanelOps, ProjectOps, ReportOps, TargetOps, VariableCsvRequest, VariableImportRequest, VariableOps};
+        let Some(src) = modbus() else { return };
+        let inst = installation().expect("Vijeo 6.3");
+        let cfg = BackendConfig { cache_dir: Some(std::env::temp_dir().join("vijeo-mcp-live").join("no-cache")), ..Default::default() };
+        let b = vijeo_backend_vd63::Vd63Backend::new(&inst, Support::Exact, &cfg).unwrap();
+        let dir = work_dir("navigator-after-build");
+        let info = ProjectOps::open(&b, &src).unwrap();
+        let (p, target) = (info.id, info.targets[0].name.clone());
+        let import = |n: usize| {
+            let path = dir.join(format!("v{n}.csv"));
+            let vars = serde_json::json!([{"name": format!("McpNav.V{n}"), "data_type": "INT", "initial_value": "1"}]);
+            let req: VariableCsvRequest = serde_json::from_value(serde_json::json!({"path": path, "variables": vars, "language": "English"})).unwrap();
+            FileOps::variables_csv(&b, &req).unwrap();
+            let imp: VariableImportRequest = serde_json::from_value(serde_json::json!({"project": p.0, "csv": path})).unwrap();
+            let r = VariableOps::import_csv(&b, &imp).unwrap();
+            assert_eq!(r.imported, Some(1), "import {n}: {r:?}");
+        };
+        import(1);
+        import(2);
+        ReportOps::export_xml(&b, p, &dir.join("xml"), true).unwrap();
+        import(3);
+
+        let built = BuildOps::build_project(&b, p).unwrap();
+        eprintln!("build: {} errores", built.errors);
+        import(4);
+        let created = TargetOps::create_panel(&b, p, &target, PanelKind::Base, Some("TrasBuild")).unwrap();
+        assert_eq!(created.name, "TrasBuild");
+        let opened = TargetOps::open_panel(&b, p, &target, r"BP:\Start").unwrap();
+        eprintln!("abierto: {opened:?}");
+        let renamed = TargetOps::rename_panel(&b, p, &target, PanelKind::Base, "TrasBuild", "TrasBuild2").unwrap();
+        eprintln!("renombrado: {renamed:?}");
+        let objs = PanelOps::objects(&b, p, &target, "Start").unwrap();
+        assert!(!objs.objects.is_empty());
+        let deleted = TargetOps::delete_panel(&b, p, &target, PanelKind::Base, "TrasBuild2", false).unwrap();
+        eprintln!("borrado: {deleted:?}");
+        let req: vijeo_core::EquipmentAddRequest =
+            serde_json::from_value(serde_json::json!({"project": p.0, "target": target, "driver": "modbustcp", "name": "PLC2", "ip_address": "172.20.10.170", "unit_id": 3})).unwrap();
+        let eq = TargetOps::add_equipment(&b, &req).unwrap();
+        assert_eq!(eq.equipment, "PLC2");
+        let vars = vijeo_core::ConfigOps::project_variables(&b, p, None, false, false).unwrap();
+        assert_eq!(vars.iter().filter(|v| v.name.starts_with("McpNav.")).count(), 4);
+        ProjectOps::close(&b, p, true).unwrap();
+    }
+
 
     /// Un CSV de variables_generate_csv se importa en Vijeo (Import Variables) y las variables quedan como
     /// se pidieron; el proyecto sigue compilando igual. Sobre el ejemplo Modbus (equipo M221_Controller,
@@ -696,7 +745,7 @@ mod live {
         let p = info.id;
         let target = info.targets[0].name.clone();
         // El ejemplo Modbus compila con 2 errores y 2 warnings (sin el 1331 del modo SoMachine). Se compila
-        // después de importar: tras un Build All, Vijeo deja de atender Import Variables.
+        // después de importar (live_navigator_after_import_and_build prueba importar después de compilar).
         let before = (2, 2);
 
         let ext =|name: &str, t: &str, addr: &str| serde_json::json!({"name": name, "data_type": t, "address": addr, "scan_group": "ScanGroup1"});

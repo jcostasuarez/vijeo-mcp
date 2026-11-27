@@ -77,8 +77,6 @@ Qué modelos se pueden crear: la regla del catálogo supone la licencia estánda
 | `panel_insert` | Crea objetos desde cero (botones con acciones —bits, palabras, scripts compilados con el compilador de Vijeo, cambiar de panel, abrir y cerrar ventanas emergentes—, lámparas, displays numéricos y de texto, textos, rectángulos, elipses y líneas, con animaciones de visibilidad, parpadeo, color, relleno y posición) o añade piezas de la Toolchest u objetos copiados de otro panel, en la posición indicada, con otro nombre y sustituciones de texto o variables |
 | `toolchest_list` | Sin Vijeo: bibliotecas de la Toolchest de la instalación y, con filtro, sus piezas (id para `panel_insert`, tipos y tamaño) |
 
-`project_goto`, `panel_create`, `panel_rename`, `panel_delete`, `equipment_add`, `variables_import` y las tres herramientas de objetos de panel no funcionan después de un `project_build` en la misma instancia (Vijeo deja de atender el Navigator): úsalos antes de compilar, o guarda, cierra y vuelve a abrir.
-
 Las herramientas de objetos trabajan como Copiar y Pegar en el editor del panel, con el portapapeles de Windows (inventario §13.2):
 - `panel_edit` comprueba las operaciones sobre una copia; luego corta todos los objetos del panel, los edita y los pega. Al final compara lo que quedó con lo esperado; si el panel quedara vacío, vuelve a pegar el original.
 - Vijeo vuelve a enlazar las variables por nombre al pegar y renumera los `ObjectID`.

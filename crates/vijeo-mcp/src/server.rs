@@ -104,8 +104,7 @@ nuevo queda con su configuración por defecto. Luego project_save.
 deja abierto, o con kind=popup una ventana emergente nueva (con su panel dentro); luego panel_insert le pone objetos \
 (un botón con open_popup abre la ventana). panel_rename renombra un panel base o una ventana emergente \
 (kind=popup; su número no cambia y las acciones siguen valiendo); panel_delete la borra, negándose si alguna \
-acción, el panel inicial u otra propiedad la usa (lista dónde; con force la borra igual). Como project_goto, no \
-funcionan tras un project_build en la misma instancia.
+acción, el panel inicial u otra propiedad la usa (lista dónde; con force la borra igual).
 - Pantallas (paneles base de un proyecto abierto), con el portapapeles de Vijeo como Copiar/Pegar: panel_objects \
 lista los objetos (ruta Grupo/Objeto, tipo, posición absoluta, textos y variables; de los smart objects, sus \
 propiedades); panel_edit renombra, mueve, redimensiona, cambia textos, sustituye variables (Vijeo las vuelve a \
@@ -117,17 +116,15 @@ numéricos y de texto, textos, rectángulos, elipses y líneas, con animaciones 
 y posición) o añade piezas de la Toolchest (toolchest_list, sin Vijeo; los smart objects —fecha, hora…— con sus \
 `properties`) u objetos copiados de otro panel. Las variables tienen que existir en el target (se comprueban en el \
 XML). Usan el portapapeles de Windows: el texto que tuviera se devuelve al terminar, el resto se pierde. Después: \
-project_build para comprobar (un smart object sin sus variables da el error 4336) y project_save. Como \
-project_goto, no funcionan tras un project_build en la misma instancia.
+project_build para comprobar (un smart object sin sus variables da el error 4336) y project_save.
 - script_lint revisa los scripts del proyecto (o un texto con `script`, antes de pegarlo en Vijeo) con el \
 compilador de scripts de Vijeo y reglas propias: sintaxis y tipos con línea y columna, variables inexistentes o con \
 otras mayúsculas, métodos. Un script que usa objetos que el MCP aún no describe al compilador (ventanas emergentes, \
 sonidos, recetas, campos de Sys…) sale con `compiles` ausente y `compiler_note`: ese sólo pasa las reglas propias. \
-project_build no compila las fuentes de los scripts de acción, así que no los valida. project_goto abre un panel base en la ventana de Vijeo; \
-tras un project_build en la misma instancia Vijeo deja de atender el Navigator: úsalo antes de compilar o \
-guarda, cierra y vuelve a abrir. Lo mismo vale para variables_import, que importa en un target abierto un CSV \
-de variables (de variables_generate_csv o de Export Variables) o directamente una lista de ariables (como en \
-variables_generate_csv), sin reemplazar las que ya existen salvo con replace_existing; luego project_save.
+project_build no compila las fuentes de los scripts de acción, así que no los valida. project_goto abre un panel base en la ventana de Vijeo. \
+variables_import importa en un target abierto un CSV de variables (de variables_generate_csv o de Export \
+Variables) o directamente una lista de variables (como en variables_generate_csv), sin reemplazar las que ya existen \
+salvo con replace_existing; luego project_save.
 - Sin abrir Vijeo: xml_validate valida un .vxml contra el public.xsd de la instalación (los exports de Vijeo \
 tampoco validan del todo: compara con uno); variables_generate_csv escribe un CSV para Variables › Import \
 Variables (verificado importándolo en Vijeo; rechaza las palabras reservadas, que harían fallar la importación \
@@ -1017,7 +1014,7 @@ impl VijeoServer {
     /// Importa variables en un target del proyecto abierto con Variables › Import Variables: un CSV (`csv`, de
     /// variables_generate_csv o de Export Variables) o la lista `variables` (como en variables_generate_csv, se genera
     /// el CSV). Las que ya existen se conservan salvo con `replace_existing`. Devuelve lo que dice Vijeo; el .vdz no
-    /// cambia hasta project_save. Tras un project_build en la misma instancia no funciona (guarda, cierra y reabre).
+    /// cambia hasta project_save.
     #[tool(annotations(destructive_hint = true, idempotent_hint = false, open_world_hint = false))]
     async fn variables_import(&self, Parameters(p): Parameters<VariableImportRequest>) -> ToolResult<VariableImportResult> {
         self.blocking(move |b| ops(b.variables(), Capability::VariableImport, b)?.import_csv(&p)).await

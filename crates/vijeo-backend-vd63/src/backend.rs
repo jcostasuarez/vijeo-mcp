@@ -222,6 +222,7 @@ impl Vd63Backend {
             Capability::PanelOpen,
             Capability::PanelCreate,
             Capability::EquipmentAdd,
+            Capability::PanelManage,
             Capability::VariableImport,
             // Formato binario de los objetos y comandos del editor verificados con 6.3 (inventario §13.2).
             Capability::PanelObjects,
@@ -906,6 +907,106 @@ impl TargetOps for Vd63Backend {
         }
         notes.push("el proyecto queda con cambios sin guardar en el .vdz: project_save para conservarlos".into());
         Ok(EquipmentAddResult { target: t.name, created_driver: existing.is_none(), equipment: eq, driver: config, notes })
+    }
+
+    fn rename_panel(&self, p: ProjectId, target: &str, kind: PanelKind, panel: &str, new_name: &str) -> VijeoResult<RenamedPanel> {
+        self.require(Capability::PanelManage)?;
+        let new = new_name.trim();
+        validate::identifier("new_name", new)?;
+        let inst = self.get(p)?;
+        let t = select_target(self.targets_of(&inst)?, Some(target))?.remove(0).name;
+        let screens = self.from_vxml(p, Some(&t), vxml::screens)?;
+        let s = find_screen(&screens, kind, panel)?;
+        if s.name == new {
+            return Err(VijeoError::invalid("new_name", format!("«{}» ya se llama así", screen_path(kind, &s.path))));
+        }
+        if let Some(o) = screens.iter().find(|o| o.popup == s.popup && o.path != s.path && o.name.eq_ignore_ascii_case(new)) {
+            return Err(VijeoError::invalid("new_name", format!("ya hay {} con ese nombre: {}", kind_label(kind), screen_path(kind, &o.path))));
+        }
+        let got = inst.with_ui("renombrar la pantalla", |u| u.rename_screen(&t, s.popup, &s.path, new))?;
+        inst.mark_unsaved();
+        let path = match s.path.rsplit_once('\\') {
+            Some((folder, _)) => format!("{folder}\\{got}"),
+            None => got.clone(),
+        };
+        let notes = vec![
+            "las acciones que abren la pantalla (cambiar de panel, abrir/cerrar el popup, panel inicial) guardan su id, que no cambia: siguen valiendo".into(),
+            "el proyecto queda con cambios sin guardar en el .vdz: project_save para conservarlos".into(),
+        ];
+        Ok(RenamedPanel { target: t, kind, old_path: screen_path(kind, &s.path), path: screen_path(kind, &path), name: got, id: s.number, notes })
+    }
+
+    fn delete_panel(&self, p: ProjectId, target: &str, kind: PanelKind, panel: &str, force: bool) -> VijeoResult<DeletedPanel> {
+        self.require(Capability::PanelManage)?;
+        let inst = self.get(p)?;
+        let t = select_target(self.targets_of(&inst)?, Some(target))?.remove(0).name;
+        let screens = self.from_vxml(p, Some(&t), vxml::screens)?;
+        let s = find_screen(&screens, kind, panel)?;
+        let path = screen_path(kind, &s.path);
+        if !s.popup && screens.iter().filter(|o| !o.popup).count() == 1 {
+            return Err(VijeoError::invalid("panel", format!("«{path}» es el único panel base del target")));
+        }
+        let ids = s.panel_ids.clone();
+        let refs = self.from_vxml(p, Some(&t), move |n| vxml::panel_id_references(n, &ids))?;
+        if !refs.is_empty() && !force {
+            return Err(VijeoError::invalid(
+                "panel",
+                format!(
+                    "«{path}» se usa en {} sitio(s): {}. Cambia esas referencias antes, o borra con force: true y quedarán sin destino (project_build da el error 2010 «invalid selection» en cada una)",
+                    refs.len(),
+                    refs.join("; ")
+                ),
+            ));
+        }
+        inst.with_ui("borrar la pantalla", |u| u.delete_screen(&t, s.popup, &s.path))?;
+        inst.mark_unsaved();
+        let mut notes = Vec::new();
+        if !refs.is_empty() {
+            notes.push("quedaron referencias sin destino (dangling_references): cámbialas con panel_edit; project_build da el error 2010 «invalid selection» en cada una".into());
+        }
+        notes.push("los scripts que cambian de pantalla escribiendo un número (_CurPanelID…) no se comprueban".into());
+        notes.push("el proyecto queda con cambios sin guardar en el .vdz: project_save para conservarlos".into());
+        Ok(DeletedPanel { target: t, kind, path, dangling_references: refs, notes })
+    }
+}
+
+/// Ruta de una pantalla como la muestran las herramientas: `BP:\Carpeta\Panel` o, en los popups, `Carpeta\Ventana`.
+fn screen_path(kind: PanelKind, path: &str) -> String {
+    match kind {
+        PanelKind::Base => format!("BP:\\{path}"),
+        PanelKind::Popup => path.to_owned(),
+    }
+}
+
+fn kind_label(kind: PanelKind) -> &'static str {
+    match kind {
+        PanelKind::Base => "un panel base",
+        PanelKind::Popup => "una ventana emergente",
+    }
+}
+
+/// Pantalla del tipo `kind` por su ruta (`BP:\Carpeta\Panel`, `Carpeta\Panel`; en los popups, `Carpeta\Ventana`)
+/// o por su nombre si no hay otra igual.
+fn find_screen(screens: &[vxml::Screen], kind: PanelKind, want: &str) -> VijeoResult<vxml::Screen> {
+    let popup = kind == PanelKind::Popup;
+    let mut w = want.trim();
+    if !popup && w.len() >= 3 && w[..3].eq_ignore_ascii_case("BP:") {
+        w = &w[3..];
+    }
+    let w = w.trim_matches('\\');
+    let all: Vec<&vxml::Screen> = screens.iter().filter(|s| s.popup == popup).collect();
+    if let Some(s) = all.iter().find(|s| s.path.eq_ignore_ascii_case(w)) {
+        return Ok((*s).clone());
+    }
+    let by_name: Vec<&&vxml::Screen> = all.iter().filter(|s| s.name.eq_ignore_ascii_case(w)).collect();
+    match by_name.as_slice() {
+        [s] => Ok((**s).clone()),
+        [] if all.is_empty() => Err(VijeoError::invalid("panel", format!("«{want}» no es {}: el target no tiene ninguna", kind_label(kind)))),
+        [] => Err(VijeoError::invalid(
+            "panel",
+            format!("«{want}» no es {} (hay: {})", kind_label(kind), all.iter().map(|s| screen_path(kind, &s.path)).collect::<Vec<_>>().join(", ")),
+        )),
+        many => Err(VijeoError::invalid("panel", format!("«{want}» es ambiguo, usa la ruta: {}", many.iter().map(|s| screen_path(kind, &s.path)).collect::<Vec<_>>().join(", ")))),
     }
 }
 
@@ -1963,6 +2064,26 @@ impl BackendFactory for Vd63Factory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_screens_by_path_or_name() {
+        let s = |popup: bool, path: &str, number: u32| vxml::Screen {
+            popup,
+            path: path.into(),
+            name: path.rsplit('\\').next().unwrap().into(),
+            number,
+            panel_ids: vec![format!("P{number}")],
+        };
+        let all = [s(false, "Start", 1), s(false, r"A\Motor", 2), s(false, r"B\Motor", 3), s(false, r"B\Bomba", 4), s(true, "Motor", 1)];
+        let find = |kind, w: &str| find_screen(&all, kind, w).map(|s| s.number).map_err(|e| e.to_string());
+        assert_eq!(find(PanelKind::Base, r"BP:\Start"), Ok(1));
+        assert_eq!(find(PanelKind::Base, r"bp:\b\motor"), Ok(3));
+        assert_eq!(find(PanelKind::Base, "bomba"), Ok(4));
+        assert!(find(PanelKind::Base, "Motor").unwrap_err().contains("ambiguo"));
+        assert_eq!(find(PanelKind::Popup, "motor"), Ok(1));
+        assert!(find(PanelKind::Popup, "Start").unwrap_err().contains("hay: Motor"));
+        assert_eq!(screen_path(PanelKind::Base, r"B\Bomba"), r"BP:\B\Bomba");
+    }
 
     #[test]
     fn renames_exported_project() {

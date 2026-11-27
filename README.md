@@ -62,6 +62,8 @@ Qué modelos se pueden crear: la regla del catálogo supone la licencia estánda
 | `project_goto` | Abre un panel base en la ventana de Vijeo del proyecto (Navigator) |
 | `equipment_add` | Añade un equipo de comunicación (PLC, variador…) a un target: a un driver que ya tiene o en uno nuevo (New Driver de Vijeo: Modbus TCP, Modbus RTU, XWAY, Siemens, Rockwell…), con su nombre y, en equipos de red como Modbus TCP, IP y Unit ID |
 | `panel_create` | Crea un panel base vacío (New Panel del Navigator), con el nombre que se pida; Vijeo le da el siguiente PanelID. Después, `panel_insert` para ponerle objetos |
+| `panel_rename` | Renombra un panel base o una ventana emergente (`kind: popup`). Su número no cambia, así que las acciones que la abren siguen valiendo |
+| `panel_delete` | Borra un panel base o una ventana emergente. Si alguna acción, el panel inicial u otra propiedad la usa, se niega y dice dónde; con `force` la borra igual y devuelve esas referencias, que `project_build` marca con el error 2010 |
 | `variables_import` | Variables › Import Variables en un target abierto: un CSV o una lista de variables (se genera el CSV). Las que ya existen se conservan salvo con `replace_existing`; el `.vdz` cambia con `project_save` |
 | `xml_validate` | Sin Vijeo: valida un `.vxml` contra el `public.xsd` de la instalación (con .NET `System.Xml`) |
 | `variables_generate_csv` | Sin Vijeo: escribe un CSV de variables en el formato de Export/Import Variables, rechazando palabras reservadas; con `project` avisa de nombres repetidos y grupos de escaneo desconocidos |
@@ -71,7 +73,7 @@ Qué modelos se pueden crear: la regla del catálogo supone la licencia estánda
 | `panel_insert` | Crea objetos desde cero (botones con acciones —bits, palabras, scripts compilados con el compilador de Vijeo, cambiar de panel, abrir y cerrar ventanas emergentes—, lámparas, displays numéricos y de texto, textos, rectángulos, elipses y líneas, con animaciones de visibilidad, parpadeo, color, relleno y posición) o añade piezas de la Toolchest u objetos copiados de otro panel, en la posición indicada, con otro nombre y sustituciones de texto o variables |
 | `toolchest_list` | Sin Vijeo: bibliotecas de la Toolchest de la instalación y, con filtro, sus piezas (id para `panel_insert`, tipos y tamaño) |
 
-`project_goto`, `panel_create`, `equipment_add`, `variables_import` y las tres herramientas de objetos de panel no funcionan después de un `project_build` en la misma instancia (Vijeo deja de atender el Navigator): úsalos antes de compilar, o guarda, cierra y vuelve a abrir.
+`project_goto`, `panel_create`, `panel_rename`, `panel_delete`, `equipment_add`, `variables_import` y las tres herramientas de objetos de panel no funcionan después de un `project_build` en la misma instancia (Vijeo deja de atender el Navigator): úsalos antes de compilar, o guarda, cierra y vuelve a abrir.
 
 Las herramientas de objetos trabajan como Copiar y Pegar en el editor del panel, con el portapapeles de Windows (inventario §13.2):
 - `panel_edit` comprueba las operaciones sobre una copia; luego corta todos los objetos del panel, los edita y los pega. Al final compara lo que quedó con lo esperado; si el panel quedara vacío, vuelve a pegar el original.

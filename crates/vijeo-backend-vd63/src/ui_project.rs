@@ -86,6 +86,8 @@ const WIZ_FINISH: i32 = 12325;
 const NAVIGATOR_TREE: i32 = 2001;
 /// Nodo de los paneles base bajo cada target (`<target>` › `Graphical Panels` › `Base Panels`).
 const BASE_PANELS_NODE: [&str; 1] = ["Base Panels"];
+/// Nodo del Navigator con las ventanas emergentes (`1: ComErrorCodes` › `10001: Panel1`).
+const POPUP_WINDOWS_NODE: &str = "Popup Windows";
 /// Lo que puede tardar el Navigator en llenarse tras abrir un proyecto.
 const NAVIGATOR_FILL: Duration = Duration::from_secs(15);
 /// Tras un Build All, Vijeo deja de atender el Navigator (Intro) e Import Variables en esa instancia
@@ -729,6 +731,62 @@ impl UiProject {
         Ok((id, got))
     }
 
+    /// Nodo del Navigator de una pantalla: «Base Panels» o «Popup Windows» › carpetas › `<n>: <nombre>`.
+    fn screen_item(&self, target: &str, popup: bool, path: &str) -> VijeoResult<TreeItem> {
+        let tree = self.tree()?;
+        let titem = self.target_item(target)?;
+        let group = if popup { POPUP_WINDOWS_NODE } else { BASE_PANELS_NODE[0] };
+        let mut item = self.group_item(&tree, titem, group).ok_or_else(|| VijeoError::Internal(format!("no se encontró «{group}» de «{target}» en el Navigator")))?;
+        for seg in path.split('\\') {
+            tree.expand(item);
+            item = tree
+                .children(item)
+                .into_iter()
+                .find(|&c| tree.text(c).is_some_and(|t| navigator_label_is(&t, seg)))
+                .ok_or_else(|| VijeoError::Internal(format!("no se encontró «{seg}» de «{path}» en el Navigator")))?;
+        }
+        Ok(item)
+    }
+
+    /// Renombra un panel base o una ventana emergente editando su etiqueta en el Navigator (F2, como
+    /// [`Self::new_panel`]); un aviso de Vijeo es un error con su texto. El número (`21: `) no cambia. Guarda.
+    pub fn rename_screen(&mut self, target: &str, popup: bool, path: &str, new: &str) -> VijeoResult<String> {
+        let item = self.screen_item(target, popup, path).map_err(|e| self.after_build(e))?;
+        let tree = self.tree()?;
+        let ok = tree.rename(item, new);
+        std::thread::sleep(Duration::from_millis(800));
+        if let Some(d) = self.ui.dialogs().into_iter().find(|d| d.info.message_box) {
+            let text = d.info.text.clone();
+            let _ = d.click(if d.button_ids().contains(&IDOK) { IDOK } else { IDCANCEL });
+            return Err(VijeoError::invalid("new_name", format!("Vijeo no aceptó «{new}»: {text}")));
+        }
+        let got = tree.text(item).and_then(|l| parse_panel_label(&l)).map(|(_, n)| n).unwrap_or_default();
+        if !ok || got != new {
+            let hint = if self.built { AFTER_BUILD_HINT } else { "" };
+            return Err(VijeoError::Internal(format!("Vijeo dejó el nombre «{got}» en vez de «{new}»{hint}")));
+        }
+        self.save()?;
+        Ok(got)
+    }
+
+    /// Borra un panel base o una ventana emergente (con sus paneles): Supr en el Navigator y Yes en «Delete
+    /// Panel» / «Delete Popup Window» (`You are about to delete [21 : RFID_1]`). Guarda.
+    pub fn delete_screen(&mut self, target: &str, popup: bool, path: &str) -> VijeoResult<()> {
+        let item = self.screen_item(target, popup, path).map_err(|e| self.after_build(e))?;
+        let name = path.rsplit('\\').next().unwrap_or(path).to_owned();
+        self.delete_panel_item(item, &name).map_err(|e| self.after_build(e))?;
+        self.save()
+    }
+
+    /// Añade a un timeout la pista de que, tras un Build All, Vijeo deja de atender el Navigator.
+    fn after_build(&self, e: VijeoError) -> VijeoError {
+        match e {
+            VijeoError::Timeout { op, ms } if self.built => VijeoError::Timeout { op: format!("{op}{AFTER_BUILD_HINT}"), ms },
+            VijeoError::Internal(m) if self.built && !m.contains(AFTER_BUILD_HINT) => VijeoError::Internal(format!("{m}{AFTER_BUILD_HINT}")),
+            e => e,
+        }
+    }
+
     /// Borra un panel del Navigator: Supr y Yes en la confirmación que nombra el panel.
     fn delete_panel_item(&mut self, item: TreeItem, name: &str) -> VijeoResult<()> {
         let tree = self.tree()?;
@@ -739,7 +797,17 @@ impl UiProject {
         let confirm = move |d: &UiDialog| sorted_buttons(d) == [IDYES, IDNO] && d.info.text.to_lowercase().contains(&lower);
         let d = self.wait_dialog("borrar el panel", confirm)?;
         d.click(IDYES);
-        self.wait_until("borrar el panel", self.t.call, |p| p.tree().ok().filter(|t| t.text(item).is_none()).map(|_| ()))
+        // Un aviso tras el Yes (Vijeo no lo borra) es un error con su texto.
+        let r = self.wait_until("borrar el panel", self.t.call, |p| {
+            let warning = p.ui.dialogs().into_iter().find(|d| d.info.message_box && !d.info.text.contains("You are about to delete"));
+            if let Some(d) = warning {
+                let text = d.info.text.clone();
+                let _ = d.click(if d.button_ids().contains(&IDOK) { IDOK } else { IDCANCEL });
+                return Some(Err(text));
+            }
+            p.tree().ok().filter(|t| t.text(item).is_none()).map(|_| Ok(()))
+        })?;
+        r.map_err(|text| VijeoError::invalid("panel", format!("Vijeo no borró «{name}»: {text}")))
     }
 
     /// Cancela los diálogos abiertos (diagnóstico).
@@ -1048,13 +1116,18 @@ impl UiProject {
 
     /// Nodo del Navigator que agrupa los paneles base del target.
     fn base_panels_item(&self, tree: &RemoteTree, target: TreeItem) -> Option<TreeItem> {
+        self.group_item(tree, target, BASE_PANELS_NODE[0])
+    }
+
+    /// Nodo `group` del Navigator (`Base Panels`, `Popup Windows`) en los tres primeros niveles bajo el target.
+    fn group_item(&self, tree: &RemoteTree, target: TreeItem, group: &str) -> Option<TreeItem> {
         let mut level = vec![target];
         for _ in 0..3 {
             let mut next = Vec::new();
             for item in level {
                 tree.expand(item);
                 for c in tree.children(item) {
-                    if tree.text(c).is_some_and(|t| BASE_PANELS_NODE.iter().any(|n| t.eq_ignore_ascii_case(n))) {
+                    if tree.text(c).is_some_and(|t| t.eq_ignore_ascii_case(group)) {
                         return Some(c);
                     }
                     next.push(c);

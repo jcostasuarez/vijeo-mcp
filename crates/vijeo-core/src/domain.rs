@@ -238,6 +238,42 @@ pub struct CreatedPanel {
     pub panel_id: u32,
 }
 
+/// Qué clase de pantalla es: un panel base o una ventana emergente (popup).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PanelKind {
+    #[default]
+    Base,
+    Popup,
+}
+
+/// Pantalla renombrada con `panel_rename`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct RenamedPanel {
+    pub target: String,
+    pub kind: PanelKind,
+    /// Ruta anterior (`BP:\Carpeta\Panel`; en los popups, `Carpeta\Ventana`).
+    pub old_path: String,
+    /// Ruta nueva, en el mismo formato.
+    pub path: String,
+    pub name: String,
+    /// PanelID (paneles base) o WindowID (popups) del Navigator, que no cambia: las acciones que la abren siguen valiendo.
+    pub id: u32,
+    pub notes: Vec<String>,
+}
+
+/// Pantalla borrada con `panel_delete`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct DeletedPanel {
+    pub target: String,
+    pub kind: PanelKind,
+    pub path: String,
+    /// Referencias a la pantalla que quedaron sin destino (acciones de cambiar de panel o abrir el popup, panel
+    /// inicial, seguridad…): `project_build` da el error 2010 «invalid selection» en cada una. Vacío si no había ninguna.
+    pub dangling_references: Vec<String>,
+    pub notes: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct BuildResult {
     pub errors: i32,

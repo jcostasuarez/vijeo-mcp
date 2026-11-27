@@ -917,6 +917,102 @@ mod live {
         assert_eq!(built.warnings, base.warnings + empty, "{:?}", built.messages);
         b.shutdown().unwrap();
     }
+
+    /// panel_rename y panel_delete sobre el ejemplo Modbus (paneles base `21: RFID_1`… y la ventana emergente
+    /// `1: ComErrorCodes` con su panel `10001: Panel1`): renombrar base y popup, errores sin tocar nada, borrar un
+    /// panel libre, negarse con uno usado por un botón y borrarlo con force; el XML y la compilación de la copia.
+    #[test]
+    fn live_panel_rename_delete() {
+        use vijeo_core::{PanelInsertRequest, PanelKind};
+        let Some(src) = modbus() else { return };
+        let b = backend();
+        let base = b.build().unwrap().build_file(&src, None).unwrap();
+        let errs = |m: &[vijeo_core::BuildMessage]| {
+            let mut v: Vec<_> = m.iter().filter(|m| m.severity == vijeo_core::MessageSeverity::Error).map(|m| m.code).collect();
+            v.sort();
+            v
+        };
+        let info = b.projects().unwrap().open(&src).unwrap();
+        let (p, target) = (info.id, info.targets[0].name.clone());
+        let tops = b.targets().unwrap();
+        let names = || -> Vec<String> { tops.panels(p, &target).unwrap().into_iter().map(|r| r.path).collect() };
+        let has = |n: &str| names().iter().any(|x| x == n);
+
+        let r = tops.rename_panel(p, &target, PanelKind::Base, "RFID_1", "Rfid_Uno").unwrap();
+        eprintln!("{r:?}");
+        assert_eq!((r.old_path.as_str(), r.path.as_str(), r.id), (r"BP:\RFID_1", r"BP:\Rfid_Uno", 21));
+        assert!(has(r"BP:\Rfid_Uno") && !has(r"BP:\RFID_1"));
+        let r = tops.rename_panel(p, &target, PanelKind::Popup, "ComErrorCodes", "ErroresCom").unwrap();
+        eprintln!("{r:?}");
+        assert_eq!((r.path.as_str(), r.id), ("ErroresCom", 1));
+        let before = names();
+        for (kind, panel, new) in [
+            (PanelKind::Base, "Rfid_Uno", "RFID_2"),
+            (PanelKind::Base, "NoExiste", "Otro"),
+            (PanelKind::Base, "Rfid_Uno", "Mal nombre"),
+            (PanelKind::Base, "Rfid_Uno", "Rfid_Uno"),
+            (PanelKind::Popup, "NoExiste", "Otro"),
+        ] {
+            let e = tops.rename_panel(p, &target, kind, panel, new).unwrap_err();
+            eprintln!("{panel} → {new}: {e}");
+            assert_eq!(e.code(), "invalid_argument", "{e}");
+        }
+        assert_eq!(names(), before);
+
+        tops.create_panel(p, &target, Some("Libre")).unwrap();
+        tops.create_panel(p, &target, Some("Usado")).unwrap();
+        let ins: PanelInsertRequest = serde_json::from_value(serde_json::json!({
+            "project": p.0, "target": target, "panel": "Rfid_Uno",
+            "items": [{"create": {"type": "switch", "label": "Usado", "on_touch": [{"op": "change_panel", "panel": "Usado"}]}, "x": 10, "y": 10, "name": "McpIrUsado"}]
+        }))
+        .unwrap();
+        panels_insert(&b, &ins);
+        let d = tops.delete_panel(p, &target, PanelKind::Base, "Libre", false).unwrap();
+        eprintln!("{d:?}");
+        assert!(d.dangling_references.is_empty(), "{d:?}");
+        assert!(!has(r"BP:\Libre"));
+        let e = tops.delete_panel(p, &target, PanelKind::Base, "Usado", false).unwrap_err();
+        eprintln!("{e}");
+        assert!(e.code() == "invalid_argument" && e.to_string().contains("McpIrUsado"), "{e}");
+        assert!(has(r"BP:\Usado"));
+        let d = tops.delete_panel(p, &target, PanelKind::Base, "Usado", true).unwrap();
+        eprintln!("{d:?}");
+        assert!(d.dangling_references.len() == 1 && d.dangling_references[0].contains("McpIrUsado"), "{d:?}");
+        assert!(!has(r"BP:\Usado"));
+        let popup = tops.delete_panel(p, &target, PanelKind::Popup, "ErroresCom", false);
+        eprintln!("popup sin force: {popup:?}");
+        let popup = match popup {
+            Ok(d) => d,
+            Err(_) => tops.delete_panel(p, &target, PanelKind::Popup, "ErroresCom", true).unwrap(),
+        };
+        eprintln!("{popup:?}");
+        assert!(tops.delete_panel(p, &target, PanelKind::Popup, "ErroresCom", true).is_err());
+
+        let dir = work_dir("panel_rename_delete");
+        let x = b.reports().unwrap().export_xml(p, &dir.join("xml"), true).unwrap();
+        let xml = std::fs::read_to_string(&x.path).unwrap();
+        assert!(xml.contains(r#"Name="Rfid_Uno" ID="P21""#), "Rfid_Uno (P21) no está en el XML");
+        // `RFID_1` y `ComErrorCodes` también son nombres de otros objetos del ejemplo: se buscan como pantalla.
+        for gone in [r#"Name="RFID_1" ID="P21""#, r#"Name="Libre""#, r#"Name="Usado""#, r#"Name="ErroresCom""#, r#"Name="ComErrorCodes" WindowID"#] {
+            assert!(!xml.contains(gone), "{gone} sigue en el XML");
+        }
+        let vdz = dir.join("McpPantallas.vdz");
+        b.projects().unwrap().save(p, Some(&vdz), true).unwrap();
+        b.projects().unwrap().close(p, false).unwrap();
+        let built = b.build().unwrap().build_file(&vdz, None).unwrap();
+        eprintln!("original: {:?}\ncopia: {:?}", base.messages, built.messages);
+        let (eb, ec) = (errs(&base.messages), errs(&built.messages));
+        eprintln!("errores original {eb:?} copia {ec:?}");
+        // Cada referencia sin destino es un error 2010 «[Switch] [McpIrUsado] [When Touch] invalid selection.».
+        let dangling = d.dangling_references.len() + popup.dangling_references.len();
+        let mut want = eb.clone();
+        want.extend(std::iter::repeat_n(Some(2010), dangling));
+        want.sort();
+        assert_eq!(ec, want);
+        assert_eq!(built.warnings, base.warnings, "{:?}", built.messages);
+        b.shutdown().unwrap();
+    }
+
     /// project_goto (Navigator + Intro) y script_lint sobre el ejemplo Hardwired, que tiene paneles en carpetas
     /// y scripts. `VIJEO_MCP_LIVE_LINT` = otro .vdz cuyos scripts se revisan también (sólo se lee).
     #[test]

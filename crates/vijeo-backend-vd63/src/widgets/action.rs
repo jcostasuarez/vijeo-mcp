@@ -43,6 +43,7 @@ pub mod kind {
     pub const WORD_XOR: u32 = 15;
     pub const PREVIOUS_PANEL: u32 = 0x14;
     pub const CHANGE_PANEL: u32 = 0x15;
+    pub const POPUP_OPEN_CENTERED: u32 = 0x1E;
     pub const POPUP_OPEN: u32 = 0x20;
     pub const POPUP_CLOSE: u32 = 0x22;
     pub const CONFIGURATION: u32 = 0x52;
@@ -84,9 +85,16 @@ pub enum Op {
     /// Cambiar de panel: número del panel base como texto («2» para P2).
     ChangePanel(String),
     PreviousPanel,
-    /// Abrir popup: expresiones de posición X e Y y el texto con el panel (ver NOTAS.md).
+    /// Abrir popup en una posición (`PopupPanelPosition="AtPosition"`): expresiones X e Y y el PanelID del popup
+    /// como texto («10001» para P10001).
     PopupOpen { x: Expr, y: Expr, target: String },
+    /// Abrir popup centrado (`Centered`, tipo 0x1E): PanelID del popup como texto.
+    PopupOpenCentered(String),
+    /// Cerrar popup: PanelID como texto; «-1» (`P4294967295` en el XML) es el popup en el que está el botón.
     PopupClose(String),
+    /// Script de acción (0x5A): el texto fuente (variables como `{F,2:2.<id>,Carpeta}.{T,2:2.<id>,Var}`) y el Java
+    /// compilado (`end:{…}`).
+    Script { source: String, compiled: String },
     /// Decisión: condición y dos listas anidadas (`<Decision>`, `<DecisionTrueList>`, `<DecisionFalseList>`).
     Decision { cond: Expr, if_true: Vec<Action>, if_false: Vec<Action> },
     /// Cualquier otro tipo: expresiones y cadenas en el orden del flujo.
@@ -116,7 +124,9 @@ impl Op {
             Op::ChangePanel(_) => CHANGE_PANEL,
             Op::PreviousPanel => PREVIOUS_PANEL,
             Op::PopupOpen { .. } => POPUP_OPEN,
+            Op::PopupOpenCentered(_) => POPUP_OPEN_CENTERED,
             Op::PopupClose(_) => POPUP_CLOSE,
+            Op::Script { .. } => SCRIPT,
             Op::Decision { .. } => DECISION,
             Op::Other { kind, .. } => *kind,
         }
@@ -131,7 +141,8 @@ impl Op {
             Op::WordSet { dest, value } | Op::WordAdd { dest, value } | Op::WordSubtract { dest, value } => {
                 (vec![dest, value], vec![])
             }
-            Op::ChangePanel(s) | Op::PopupClose(s) => (vec![], vec![s.as_str()]),
+            Op::ChangePanel(s) | Op::PopupClose(s) | Op::PopupOpenCentered(s) => (vec![], vec![s.as_str()]),
+            Op::Script { source, compiled } => (vec![], vec![source.as_str(), compiled.as_str()]),
             Op::PreviousPanel => (vec![], vec![]),
             Op::PopupOpen { x, y, target } => (vec![x, y], vec![target.as_str()]),
             Op::Other { exprs, strings, .. } => (exprs.iter().collect(), strings.iter().map(|s| s.as_str()).collect()),
@@ -164,6 +175,11 @@ impl Op {
                 Op::PopupOpen { x, y, target: strings.remove(0) }
             }
             (POPUP_CLOSE, 0, 1) => Op::PopupClose(strings.remove(0)),
+            (POPUP_OPEN_CENTERED, 0, 1) => Op::PopupOpenCentered(strings.remove(0)),
+            (SCRIPT, 0, 2) => {
+                let compiled = strings.pop().unwrap();
+                Op::Script { source: strings.pop().unwrap(), compiled }
+            }
             _ => Op::Other { kind: k, exprs, strings },
         }
     }

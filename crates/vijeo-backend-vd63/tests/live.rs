@@ -631,6 +631,27 @@ mod live {
         }
     }
 
+    /// Amplía el corpus de acciones (no comprueba nada): con `VIJEO_MCP_DUMP=<carpeta>` copia los paneles del
+    /// ejemplo Modbus cuyos botones abren el popup P10001 (`PopPanel Open AtPosition`) y los guarda como `.bin`.
+    #[test]
+    fn live_dump_popup_clips() {
+        use vijeo_core::ProjectOps;
+        let Ok(out) = std::env::var("VIJEO_MCP_DUMP") else { return };
+        let Some(src) = modbus() else { return };
+        let out = PathBuf::from(out);
+        std::fs::create_dir_all(&out).unwrap();
+        let inst = installation().expect("Vijeo 6.3");
+        let cfg = BackendConfig { cache_dir: Some(std::env::temp_dir().join("vijeo-mcp-live").join("no-cache")), ..Default::default() };
+        let b = vijeo_backend_vd63::Vd63Backend::new(&inst, Support::Exact, &cfg).unwrap();
+        let info = ProjectOps::open(&b, &src).unwrap();
+        let (p, target) = (info.id, info.targets[0].name.clone());
+        for panel in ["ATV_Motor_67", "RFID_1"] {
+            let raw = b.copy_panel_raw(p, &target, panel).unwrap().expect("panel con objetos");
+            std::fs::write(out.join(format!("MB_{panel}.bin")), &raw).unwrap();
+        }
+        ProjectOps::close(&b, p, true).unwrap();
+    }
+
     /// Diagnóstico: qué diálogo abre Import Variables (0xC419) con el nodo Variables seleccionado.
     #[test]
     fn live_probe_import_variables_dialog() {
@@ -1051,6 +1072,193 @@ mod live {
         }
 
         let vdz = dir.join("McpTexto.vdz");
+        b.projects().unwrap().save(p, Some(&vdz), true).unwrap();
+        b.projects().unwrap().close(p, false).unwrap();
+        let built = b.build().unwrap().build_file(&vdz, None).unwrap();
+        eprintln!("original: {:?}\ncopia: {:?}", base.messages, built.messages);
+        assert_eq!(errs(&built.messages), errs(&base.messages));
+        assert_eq!(built.warnings, base.warnings, "{:?}", built.messages);
+        b.shutdown().unwrap();
+    }
+
+    /// Acciones de popup en botones nuevos, sobre el ejemplo Modbus (ventana ComErrorCodes, panel Panel1 = P10001):
+    /// abrir en una posición, abrir centrado y cerrar. Se mira lo que guarda Vijeo tras pegar (portapapeles
+    /// recopiado), su XML y que la copia compila como el original.
+    #[test]
+    fn live_popup_actions() {
+        use vijeo_backend_vd63::objects::Clip;
+        use vijeo_backend_vd63::widgets::{action::Op, switch::Switch};
+        use vijeo_core::{Backend, PanelInsertRequest, PanelOps};
+        let Some(src) = modbus() else { return };
+        let inst = installation().expect("Vijeo 6.3");
+        let cfg = BackendConfig { cache_dir: Some(std::env::temp_dir().join("vijeo-mcp-live").join("no-cache")), ..Default::default() };
+        let b = vijeo_backend_vd63::Vd63Backend::new(&inst, Support::Exact, &cfg).unwrap();
+        let errs = |m: &[vijeo_core::BuildMessage]| {
+            let mut v: Vec<_> = m.iter().filter(|m| m.severity == vijeo_core::MessageSeverity::Error).map(|m| m.code).collect();
+            v.sort();
+            v
+        };
+        let base = b.build().unwrap().build_file(&src, None).unwrap();
+        let info = b.projects().unwrap().open(&src).unwrap();
+        let (p, target) = (info.id, info.targets[0].name.clone());
+        // El popup del ejemplo es la ventana ComErrorCodes con un panel, Panel1 (P10001): vale cualquiera de los dos
+        // nombres o la ruta.
+        let ins: PanelInsertRequest = serde_json::from_value(serde_json::json!({
+            "project": p.0, "target": target, "panel": "Alarms",
+            "items": [
+                {"create": {"type": "switch", "label": "PopXY", "on_touch": [{"op": "open_popup", "popup": "Panel1", "x": 30, "y": 25}]}, "x": 10, "y": 40, "name": "McpPopXY"},
+                {"create": {"type": "switch", "label": "PopCen", "on_touch": [{"op": "open_popup", "popup": "ComErrorCodes"}]}, "x": 80, "y": 40, "name": "McpPopCen"},
+                {"create": {"type": "switch", "label": "Cerrar", "on_release": [{"op": "close_popup", "popup": r"ComErrorCodes\Panel1"}]}, "x": 150, "y": 40, "name": "McpPopClose"}
+            ]
+        }))
+        .unwrap();
+        let r = PanelOps::insert(&b, &ins).unwrap();
+        eprintln!("{:#?}\n{:?}", r.changes, r.warnings);
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+        let bad: PanelInsertRequest = serde_json::from_value(serde_json::json!({
+            "project": p.0, "target": target, "panel": "Alarms",
+            "items": [{"create": {"type": "switch", "label": "X", "on_touch": [{"op": "open_popup", "popup": "NoExiste"}]}, "x": 0, "y": 0}]
+        }))
+        .unwrap();
+        let e = PanelOps::insert(&b, &bad).unwrap_err().to_string();
+        assert!(e.contains("ComErrorCodes\\Panel1"), "{e}");
+
+        // Lo que Vijeo guarda tras pegar.
+        let raw = b.copy_panel_raw(p, &target, "Alarms").unwrap().unwrap();
+        let clip = Clip::from_bytes(&raw).unwrap();
+        let ops = |name: &str| -> Vec<Op> {
+            let path = clip.resolve(name).unwrap_or_else(|e| panic!("falta {name}: {e}"));
+            let s = Switch::parse(clip.node(&path).class_data()).unwrap();
+            s.on_touch.iter().chain(&s.on_release).map(|a| a.op.clone()).collect()
+        };
+        match &ops("McpPopXY")[..] {
+            [Op::PopupOpen { x, y, target }] => assert_eq!((x.raw.as_str(), y.raw.as_str(), target.as_str()), ("30", "25", "10001")),
+            o => panic!("{o:?}"),
+        }
+        assert_eq!(ops("McpPopCen"), [Op::PopupOpenCentered("10001".into())]);
+        assert_eq!(ops("McpPopClose"), [Op::PopupClose("10001".into())]);
+
+        let dir = work_dir("popup_actions");
+        let x = b.reports().unwrap().export_xml(p, &dir.join("xml"), true).unwrap();
+        let xml = std::fs::read_to_string(&x.path).unwrap();
+        let obj = |name: &str| -> String {
+            let at = xml.find(&format!("Name=\"{name}\"")).unwrap_or_else(|| panic!("{name} no está en el XML"));
+            let start = xml[..at].rfind('<').unwrap();
+            let end = xml[start..].find("</Switch>").map(|e| start + e + 9).unwrap_or(start + 3000);
+            xml[start..end.min(xml.len())].to_owned()
+        };
+        for n in ["McpPopXY", "McpPopCen", "McpPopClose"] {
+            eprintln!("---- {n}\n{}", obj(n));
+        }
+        let vdz = dir.join("McpPopup.vdz");
+        b.projects().unwrap().save(p, Some(&vdz), true).unwrap();
+        b.projects().unwrap().close(p, false).unwrap();
+        let built = b.build().unwrap().build_file(&vdz, None).unwrap();
+        eprintln!("original: {:?}\ncopia: {:?}", base.messages, built.messages);
+        assert!(obj("McpPopXY").contains(r#"PopupPanelAction="Open" PopupPanelID="P10001" PopupPanelPosition="AtPosition" PopupPanelPosX="30" PopupPanelPosY="25""#));
+        assert!(obj("McpPopCen").contains(r#"PopupPanelAction="Open" PopupPanelID="P10001" PopupPanelPosition="Centered""#));
+        assert!(obj("McpPopClose").contains(r#"<WhenRelease>"#) && obj("McpPopClose").contains(r#"PopupPanelAction="Close" PopupPanelID="P10001""#));
+        assert_eq!(errs(&built.messages), errs(&base.messages));
+        assert_eq!(built.warnings, base.warnings, "{:?}", built.messages);
+        b.shutdown().unwrap();
+    }
+
+    /// Acción de script en botones nuevos (ejemplo Hardwired): el script de DateAndTime de los ejemplos, que tiene que
+    /// quedar con el mismo Java que guardó Vijeo, y otro con variable local, `if`, `write` y `Math`. Un script que no
+    /// compila se rechaza con su posición sin tocar el panel. Se mira lo que guarda Vijeo, su XML y que compila.
+    #[test]
+    fn live_script_actions() {
+        use vijeo_backend_vd63::objects::Clip;
+        use vijeo_backend_vd63::widgets::{action::Op, switch::Switch};
+        use vijeo_core::{Backend, PanelInsertRequest, PanelOps};
+        let Some(src) = sample() else { return };
+        let inst = installation().expect("Vijeo 6.3");
+        let cfg = BackendConfig { cache_dir: Some(std::env::temp_dir().join("vijeo-mcp-live").join("no-cache")), ..Default::default() };
+        let b = vijeo_backend_vd63::Vd63Backend::new(&inst, Support::Exact, &cfg).unwrap();
+        let errs = |m: &[vijeo_core::BuildMessage]| {
+            let mut v: Vec<_> = m.iter().filter(|m| m.severity == vijeo_core::MessageSeverity::Error).map(|m| m.code).collect();
+            v.sort();
+            v
+        };
+        let base = b.build().unwrap().build_file(&src, None).unwrap();
+        let info = b.projects().unwrap().open(&src).unwrap();
+        let (p, target) = (info.id, info.targets[0].name.clone());
+        let date_time = "//-------------------------------------\r\n//Script Created: Oct 16, 2013\r\n//\r\n// Description:\r\n//\r\n//-------------------------------------\r\nSys.setTime(MyController.DateAndTime.iGetRTCHour.getIntValue(),\r\n\t\tMyController.DateAndTime.iGetRTCMin.getIntValue(),\r\n\t\tMyController.DateAndTime.iGetRTCSec.getIntValue());\r\nSys.setDate(MyController.DateAndTime.iGetRTCYear.getIntValue(),\r\n\t\tMyController.DateAndTime.iGetRTCMonth.getIntValue(),\r\n\t\tMyController.DateAndTime.iGetRTCDay.getIntValue());\r\n";
+        let java = "end:{//-------------------------------------\r\n//Script Created: Oct 16, 2013\r\n//\r\n// Description:\r\n//\r\n//-------------------------------------\r\nCgpSystem.setTime(TagDB.MyController.DateAndTime.iGetRTCHour.getIntValue(0),\r\nTagDB.MyController.DateAndTime.iGetRTCMin.getIntValue(0),\r\nTagDB.MyController.DateAndTime.iGetRTCSec.getIntValue(0));\r\nCgpSystem.setDate(TagDB.MyController.DateAndTime.iGetRTCYear.getIntValue(0),\r\nTagDB.MyController.DateAndTime.iGetRTCMonth.getIntValue(0),\r\nTagDB.MyController.DateAndTime.iGetRTCDay.getIntValue(0));\r\n\r\n}";
+        let own = "int h = MyController.DateAndTime.iGetRTCHour.getIntValue();\nif (h > 12) { h = h - 12; }\nMyController.DateAndTime.iSetRTCHour.write(h);\nMyController.Energy.reTotalEnergy.write((float)Math.sqrt(2.0));";
+
+        // Uno que no compila: error con su posición y el panel sin tocar.
+        let bad: PanelInsertRequest = serde_json::from_value(serde_json::json!({
+            "project": p.0, "target": target, "panel": "Alarms",
+            "items": [{"create": {"type": "switch", "label": "Mal", "on_touch": [{"op": "script", "script": "MyController.NoExiste.write(1);"}]}, "x": 0, "y": 0, "name": "McpMal"}]
+        }))
+        .unwrap();
+        let e = PanelOps::insert(&b, &bad).unwrap_err().to_string();
+        assert!(e.contains("línea 1") && e.contains("NoExiste"), "{e}");
+
+        let ins: PanelInsertRequest = serde_json::from_value(serde_json::json!({
+            "project": p.0, "target": target, "panel": "Alarms",
+            "items": [
+                {"create": {"type": "switch", "label": "Sync", "on_touch": [{"op": "script", "script": date_time}]}, "x": 10, "y": 40, "name": "McpScript1"},
+                {"create": {"type": "switch", "label": "Own", "on_release": [{"op": "script", "script": own}]}, "x": 80, "y": 40, "name": "McpScript2"}
+            ]
+        }))
+        .unwrap();
+        let r = PanelOps::insert(&b, &ins).unwrap();
+        eprintln!("{:#?}\n{:?}", r.changes, r.warnings);
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+        assert!(!r.objects.iter().any(|o| o.name == "McpMal"));
+        // panel_edit: un script nuevo en «al tocar» de McpScript2 (el de «al soltar» se queda).
+        let ed: vijeo_core::PanelEditRequest = serde_json::from_value(serde_json::json!({
+            "project": p.0, "target": target, "panel": "Alarms",
+            "operations": [{"op": "set_actions", "object": "McpScript2", "on_touch": [{"op": "script", "script": "Sys.beep();"}]}]
+        }))
+        .unwrap();
+        let e = PanelOps::edit(&b, &ed).unwrap();
+        assert!(e.applied && e.warnings.is_empty(), "{:?}", e.warnings);
+
+        // Lo que Vijeo guarda tras pegar: la fuente vuelve enlazada ({F,2:…}) y el Java tal cual.
+        let raw = b.copy_panel_raw(p, &target, "Alarms").unwrap().unwrap();
+        let clip = Clip::from_bytes(&raw).unwrap();
+        let ops = |name: &str| -> Vec<Op> {
+            let path = clip.resolve(name).unwrap_or_else(|e| panic!("falta {name}: {e}"));
+            let s = Switch::parse(clip.node(&path).class_data()).unwrap();
+            s.on_touch.iter().chain(&s.on_release).map(|a| a.op.clone()).collect()
+        };
+        match &ops("McpScript1")[..] {
+            [Op::Script { source, compiled }] => {
+                eprintln!("fuente guardada: {source:?}");
+                assert_eq!(compiled, java);
+                assert!(source.contains("Sys.setTime(") && source.contains("iGetRTCHour}.getIntValue()"), "{source}");
+            }
+            o => panic!("{o:?}"),
+        }
+        match &ops("McpScript2")[..] {
+            [Op::Script { compiled: beep, .. }, Op::Script { compiled, .. }] => {
+                assert_eq!(beep, "end:{CgpSystem.beep();\r\n}");
+                eprintln!("{compiled}");
+                assert!(compiled.starts_with("end:{int h =TagDB.MyController.DateAndTime.iGetRTCHour.getIntValue(0);"), "{compiled}");
+                assert!(compiled.contains("TagDB.MyController.DateAndTime.iSetRTCHour.write(h);"), "{compiled}");
+                assert!(compiled.contains("TagDB.MyController.Energy.reTotalEnergy.write((float)Math.sqrt(2.0));"), "{compiled}");
+            }
+            o => panic!("{o:?}"),
+        }
+
+        let dir = work_dir("script_actions");
+        let x = b.reports().unwrap().export_xml(p, &dir.join("xml"), true).unwrap();
+        let xml = std::fs::read_to_string(&x.path).unwrap();
+        let obj = |name: &str| -> String {
+            let at = xml.find(&format!("Name=\"{name}\"")).unwrap_or_else(|| panic!("{name} no está en el XML"));
+            let start = xml[..at].rfind('<').unwrap();
+            let end = xml[start..].find("</Switch>").map(|e| start + e + 9).unwrap_or(start + 4000);
+            xml[start..end.min(xml.len())].to_owned()
+        };
+        let (s1, s2) = (obj("McpScript1"), obj("McpScript2"));
+        eprintln!("---- McpScript1\n{s1}\n---- McpScript2\n{s2}");
+        assert!(s1.contains("<Script ScriptType=\"NativeScript\"") && s1.contains("Sys.setTime(MyController.DateAndTime.iGetRTCHour.getIntValue()"), "{s1}");
+        assert!(s2.contains("<WhenRelease>") && s2.contains("iSetRTCHour.write(h)"), "{s2}");
+
+        let vdz = dir.join("McpScripts.vdz");
         b.projects().unwrap().save(p, Some(&vdz), true).unwrap();
         b.projects().unwrap().close(p, false).unwrap();
         let built = b.build().unwrap().build_file(&vdz, None).unwrap();

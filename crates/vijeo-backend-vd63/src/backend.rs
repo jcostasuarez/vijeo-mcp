@@ -17,7 +17,8 @@ use vijeo_ui::process;
 
 use crate::catalog::{split_hmi_type, Catalog};
 use crate::ui_project::{self, NewTarget, Timeouts, UiProject};
-use crate::{dataconv, drivers, feedback, lint, objects, panel_ops, probe, reports, swx, toolchest, validate, varcsv, vdz, vxml, xsd};
+use crate::{dataconv, drivers, feedback, lint, objects, panel_ops, probe, reports, script, swx, toolchest, validate, varcsv, vdz, vxml, xsd};
+use crate::widgets::build::{self, RefKind};
 
 /// Esquema público del XML de proyecto, relativo a `Vijeo-Frame`.
 const PUBLIC_XSD: &str = r"XML\public.xsd";
@@ -837,25 +838,45 @@ fn panel_path(r: &PanelRef) -> String {
     r.path.trim_start_matches("BP:\\").to_owned()
 }
 
-/// Número de un panel base para «cambiar de panel» (`P2` → `2`), buscado por ruta (`Carpeta\Panel`) o nombre.
-fn find_base_panel(ids: &[vxml::PanelId], want: &str) -> Result<String, String> {
-    let w = want.trim().trim_start_matches("BP:").trim_start_matches("bp:").trim_matches('\\');
-    let base: Vec<&vxml::PanelId> = ids.iter().filter(|p| p.group == "Base Panels").collect();
-    let hit = base.iter().find(|p| p.path.eq_ignore_ascii_case(w)).copied().or_else(|| {
-        let by_name: Vec<&&vxml::PanelId> = base.iter().filter(|p| p.name.eq_ignore_ascii_case(w)).collect();
-        (by_name.len() == 1).then(|| *by_name[0])
-    });
+/// PanelID como texto (`P2` → `2`, `P10001` → `10001`) de un panel base («cambiar de panel») o de una ventana
+/// emergente (abrir/cerrar popup), buscado por ruta (`Carpeta\Panel`; en los popups `Carpeta\Ventana\Panel`) o por
+/// nombre si no hay otro igual. Un popup también se encuentra por el nombre de su ventana si ésta tiene un solo panel.
+fn find_panel(ids: &[vxml::PanelId], kind: RefKind, want: &str) -> Result<String, String> {
+    let (group, what) = match kind {
+        RefKind::Base => ("Base Panels", "un panel base"),
+        RefKind::Popup => ("Popup Windows", "un panel de ventana emergente"),
+        RefKind::Script => return Err("find_panel no busca scripts".into()),
+    };
+    let w = want.trim();
+    let w = if kind == RefKind::Base { w.trim_start_matches("BP:").trim_start_matches("bp:") } else { w }.trim_matches('\\');
+    let all: Vec<&vxml::PanelId> = ids.iter().filter(|p| p.group == group).collect();
+    let unique = |f: &dyn Fn(&vxml::PanelId) -> bool| {
+        let m: Vec<&vxml::PanelId> = all.iter().copied().filter(|p| f(p)).collect();
+        (m.len() == 1).then(|| m[0])
+    };
+    let hit = all
+        .iter()
+        .copied()
+        .find(|p| p.path.eq_ignore_ascii_case(w))
+        .or_else(|| unique(&|p| p.name.eq_ignore_ascii_case(w)))
+        .or_else(|| unique(&|p| !p.window.is_empty() && p.window.eq_ignore_ascii_case(w)));
     match hit {
         Some(p) => p.id.strip_prefix('P').map(str::to_owned).ok_or_else(|| format!("id de panel inesperado «{}»", p.id)),
-        None => Err(format!(
-            "«{want}» no es un panel base (hay: {})",
-            base.iter().map(|p| p.path.as_str()).collect::<Vec<_>>().join(", ")
-        )),
+        None if all.is_empty() => Err(format!("«{want}» no es {what}: el target no tiene ninguna")),
+        None => Err(format!("«{want}» no es {what} (hay: {})", all.iter().map(|p| p.path.as_str()).collect::<Vec<_>>().join(", "))),
+    }
+}
+
+/// Referencias de las acciones: paneles por su id ([`find_panel`]) y scripts por su Java ya compilado.
+fn resolve_ref(ids: &[vxml::PanelId], compiled: &BTreeMap<String, String>, kind: RefKind, want: &str) -> Result<String, String> {
+    match kind {
+        RefKind::Script => compiled.get(want).cloned().ok_or_else(|| "script sin compilar".to_owned()),
+        _ => find_panel(ids, kind, want),
     }
 }
 
 fn uses_change_panel(l: &[SwitchAction]) -> bool {
-    l.iter().any(|a| matches!(a, SwitchAction::ChangePanel { .. }))
+    build::uses_panels(l)
 }
 
 /// El portapapeles es uno para todo el sistema: una operación de objetos a la vez.
@@ -921,6 +942,30 @@ impl Vd63Backend {
         }
     }
 
+    /// Compila con el compilador de Vijeo los scripts de acción de una operación (fuente normalizada → Java), con las
+    /// variables del target sacadas del XML. Si alguno no compila, nada se toca y se devuelven sus errores.
+    fn compile_scripts(&self, p: ProjectId, target: &str, sources: &[String]) -> VijeoResult<BTreeMap<String, String>> {
+        let mut out = BTreeMap::new();
+        if sources.is_empty() {
+            return Ok(out);
+        }
+        let symbols = self.from_vxml(p, Some(target), vxml::script_symbols)?;
+        let results = script::compile(&self.inst.frame_dir, &symbols, sources)?;
+        let mut bad = Vec::new();
+        for (i, (src, r)) in sources.iter().zip(results).enumerate() {
+            match r.compiled {
+                Some(c) if r.errors.is_empty() => {
+                    out.insert(src.clone(), c);
+                }
+                _ => bad.push(format!("script {}: {}", i + 1, script::describe(&r.errors))),
+            }
+        }
+        if !bad.is_empty() {
+            return Err(VijeoError::invalid("script", format!("no compila con el compilador de Vijeo: {}", bad.join(" | "))));
+        }
+        Ok(out)
+    }
+
     fn toolchest_libs(&self) -> VijeoResult<&[toolchest::Library]> {
         self.require(Capability::Toolchest)?;
         Ok(self.toolchest.get_or_init(|| toolchest::libraries(&self.inst.frame_dir)))
@@ -965,7 +1010,18 @@ impl PanelOps for Vd63Backend {
             _ => false,
         });
         let ids = self.object_context(req.project, &t, &panel_ops::edit_variables(&req.operations), need_panels)?;
-        let lookup = |p: &str| find_base_panel(&ids, p);
+        let sources: Vec<String> = req
+            .operations
+            .iter()
+            .flat_map(|op| match op {
+                PanelEditOp::SetActions { on_touch, on_release, while_pressed, .. } => {
+                    [on_touch, on_release, while_pressed].into_iter().flatten().flat_map(|l| build::scripts(l)).collect()
+                }
+                _ => Vec::new(),
+            })
+            .collect();
+        let compiled = self.compile_scripts(req.project, &t, &sources)?;
+        let lookup = |k: RefKind, p: &str| resolve_ref(&ids, &compiled, k, p);
         // Las propiedades de los smart objects sólo se sabe si son variables tras copiar el panel: se comprueban
         // entonces contra las variables del XML, leídas antes de tocar la interfaz.
         let known = if panel_ops::has_property_edits(&req.operations) { Some(self.from_vxml(req.project, Some(&t), vxml::variable_names)?) } else { None };
@@ -1062,7 +1118,19 @@ impl PanelOps for Vd63Backend {
             sources.push(s);
         }
         let ids = self.object_context(req.project, &t, &vars, need_panels)?;
-        let lookup = |p: &str| find_base_panel(&ids, p);
+        let scripts: Vec<String> = req
+            .items
+            .iter()
+            .filter_map(|i| match &i.create {
+                Some(NewObject::Switch { on_touch, on_release, while_pressed, .. }) => {
+                    Some([on_touch, on_release, while_pressed].into_iter().flat_map(|l| build::scripts(l)).collect::<Vec<_>>())
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let compiled = self.compile_scripts(req.project, &t, &scripts)?;
+        let lookup = |k: RefKind, p: &str| resolve_ref(&ids, &compiled, k, p);
         let _one = CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner());
         let mut backup = vijeo_ui::clipboard::TextBackup::take();
         let mut touched = false;

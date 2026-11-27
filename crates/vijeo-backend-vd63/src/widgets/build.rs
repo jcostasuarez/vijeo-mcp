@@ -19,8 +19,20 @@ use crate::objects::{guid_bytes, Node, EMPTY_EXTENSION};
 
 pub const GUID_SWITCH: &str = "{347CCED5-5E26-497A-A140-EA017D0272BA}";
 
-/// Número de un panel base para «cambiar de panel» (`P2` → `2`) a partir de su nombre o ruta.
-pub type PanelLookup<'a> = &'a dyn Fn(&str) -> Result<String, String>;
+/// Lo que las acciones necesitan sacar del proyecto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefKind {
+    /// Paneles base («cambiar de panel»): su PanelID.
+    Base,
+    /// Ventanas emergentes (abrir y cerrar popup): su PanelID.
+    Popup,
+    /// Script de acción: su Java compilado (`crate::script`), a partir de la fuente normalizada.
+    Script,
+}
+
+/// Referencias de las acciones: PanelID de un panel como texto (`P2` → `2`, `P10001` → `10001`) a partir de su nombre o
+/// ruta, o el Java compilado de un script a partir de su fuente.
+pub type PanelLookup<'a> = &'a dyn Fn(RefKind, &str) -> Result<String, String>;
 
 /// `RRGGBB` → COLORREF; `none` (o `transparent`) → `None`.
 pub fn color(s: &str) -> Result<Option<u32>, String> {
@@ -94,8 +106,25 @@ pub fn action_variables(a: &SwitchAction) -> Vec<&str> {
                 vec![variable, value]
             }
         }
-        ChangePanel { .. } | PreviousPanel => vec![],
+        // Las variables de un script las comprueba el compilador.
+        ChangePanel { .. } | PreviousPanel | OpenPopup { .. } | ClosePopup { .. } | Script { .. } => vec![],
     }
+}
+
+/// ¿Alguna acción necesita buscar paneles (los ids salen del XML)?
+pub fn uses_panels(l: &[SwitchAction]) -> bool {
+    l.iter().any(|a| matches!(a, SwitchAction::ChangePanel { .. } | SwitchAction::OpenPopup { .. } | SwitchAction::ClosePopup { .. }))
+}
+
+/// Fuentes de los scripts de unas acciones, normalizadas como las guarda Vijeo (`\r\n`).
+pub fn scripts(l: &[SwitchAction]) -> Vec<String> {
+    l.iter().filter_map(|a| if let SwitchAction::Script { script } = a { Some(crate::script::normalize(script)) } else { None }).collect()
+}
+
+/// Coordenada de un popup: constante entera (`PopupPanelPosX="20"` en los ejemplos). Su `compiled2` en los ejemplos
+/// es el contexto de la acción anterior; Vijeo lo acepta vacío.
+fn popup_coord(v: i32) -> Expr {
+    Expr::constant(&v.to_string(), "")
 }
 
 /// Variables que usa un objeto nuevo.
@@ -159,8 +188,27 @@ pub fn op(a: &SwitchAction, panels: PanelLookup) -> Result<Op, String> {
         WordSubtract { variable, value } => {
             Op::WordSubtract { dest: Expr::word_dest(variable.trim()), value: word_operand(variable.trim(), value) }
         }
-        ChangePanel { panel } => Op::ChangePanel(panels(panel)?),
+        ChangePanel { panel } => Op::ChangePanel(panels(RefKind::Base, panel)?),
         PreviousPanel => Op::PreviousPanel,
+        OpenPopup { popup, x, y } => {
+            let target = panels(RefKind::Popup, popup)?;
+            match (x, y) {
+                (Some(x), Some(y)) => Op::PopupOpen { x: popup_coord(*x), y: popup_coord(*y), target },
+                (None, None) => Op::PopupOpenCentered(target),
+                _ => return Err("open_popup: indica `x` e `y` (las dos) o ninguna (centrado)".into()),
+            }
+        }
+        // «-1» (cerrar el popup en el que está el botón) da el error 2010 en un panel base, que es donde trabajan
+        // panel_insert y panel_edit: sólo se cierra un popup por su nombre.
+        ClosePopup { popup } => Op::PopupClose(panels(RefKind::Popup, popup)?),
+        Script { script } => {
+            let source = crate::script::normalize(script);
+            if source.trim().is_empty() {
+                return Err("script: el script está vacío".into());
+            }
+            let compiled = panels(RefKind::Script, &source)?;
+            Op::Script { source, compiled }
+        }
     })
 }
 
@@ -673,9 +721,11 @@ pub fn set_colors(n: &mut Node, c: &ColorChange) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn panels(p: &str) -> Result<String, String> {
-        match p {
-            "Cabinet" => Ok("2".into()),
+    fn panels(k: RefKind, p: &str) -> Result<String, String> {
+        match (k, p) {
+            (RefKind::Base, "Cabinet") => Ok("2".into()),
+            (RefKind::Popup, "Errores") => Ok("10001".into()),
+            (RefKind::Script, src) => Ok(format!("end:{{{src}}}")),
             _ => Err(format!("no hay panel {p}")),
         }
     }
@@ -744,6 +794,52 @@ mod tests {
         ];
         for v in bad {
             assert!(new_object(&obj(v.clone()), "X", 0, 0, None, None, None, &panels).is_err(), "{v}");
+        }
+    }
+
+    #[test]
+    fn script_action() {
+        let json = serde_json::json!([{"op": "script", "script": "Sys.beep();\nA.x.write(1);"}]);
+        let a: Vec<SwitchAction> = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(scripts(&a), ["Sys.beep();\r\nA.x.write(1);"]);
+        let o = obj(serde_json::json!({"type": "switch", "label": "S", "on_touch": json}));
+        let n = new_object(&o, "B", 0, 0, None, None, None, &panels).unwrap();
+        let s = Switch::parse(n.class_data()).unwrap();
+        assert_eq!(s.to_bytes(), n.class_data());
+        assert_eq!(
+            s.on_touch[0].op,
+            Op::Script { source: "Sys.beep();\r\nA.x.write(1);".into(), compiled: "end:{Sys.beep();\r\nA.x.write(1);}".into() }
+        );
+        let empty = obj(serde_json::json!({"type": "switch", "label": "S", "on_touch": [{"op": "script", "script": "  \n"}]}));
+        assert!(new_object(&empty, "B", 0, 0, None, None, None, &panels).is_err());
+    }
+
+    #[test]
+    fn popup_actions() {
+        let o = obj(serde_json::json!({"type": "switch", "label": "Pop",
+            "on_touch": [{"op": "open_popup", "popup": "Errores", "x": 30, "y": 25}, {"op": "open_popup", "popup": "Errores"}],
+            "on_release": [{"op": "close_popup", "popup": "Errores"}]}));
+        let n = new_object(&o, "B", 0, 0, None, None, None, &panels).unwrap();
+        let s = Switch::parse(n.class_data()).unwrap();
+        assert_eq!(s.to_bytes(), n.class_data());
+        let touch: Vec<&Op> = s.on_touch.iter().map(|a| &a.op).collect();
+        match touch[..] {
+            [Op::PopupOpen { x, y, target }, Op::PopupOpenCentered(c)] => {
+                assert_eq!((x.raw.as_str(), y.raw.as_str(), target.as_str(), c.as_str()), ("30", "25", "10001", "10001"));
+                assert_eq!((x.l24, x.l28, x.l2c, x.l30), (0x40, 5, 1, 0x40));
+            }
+            _ => panic!("{touch:?}"),
+        }
+        assert_eq!(s.on_release[0].op, Op::PopupClose("10001".into()));
+        assert_eq!(s.on_touch.iter().chain(&s.on_release).map(|a| a.internal_id).collect::<Vec<_>>(), [1, 2, 3]);
+        let bad = [
+            serde_json::json!({"op": "open_popup", "popup": "Errores", "x": 30}),
+            serde_json::json!({"op": "open_popup", "popup": "Cabinet"}),
+            serde_json::json!({"op": "close_popup"}),
+        ];
+        for a in bad {
+            let o = serde_json::from_value::<NewObject>(serde_json::json!({"type": "switch", "label": "X", "on_touch": [a.clone()]}));
+            assert!(o.map_err(|e| e.to_string()).and_then(|o| new_object(&o, "X", 0, 0, None, None, None, &panels).map(|_| ())).is_err(), "{a}");
         }
     }
 

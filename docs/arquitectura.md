@@ -87,6 +87,8 @@ pub enum Capability {
     DataConvert,        // DataConverter.exe (sin Vijeo)
     PanelOpen,          // abrir un panel en la ventana de Vijeo (Navigator)
     VariableImport,     // Import Variables de un CSV en un target abierto
+    PanelObjects,       // objetos de los paneles base: leer, editar e insertar (portapapeles de Vijeo)
+    Toolchest,          // piezas de la Toolchest de la instalación (sin Vijeo)
     // Download / RetrieveSource: fuera de la primera versión (D3).
 }
 ```
@@ -110,6 +112,7 @@ pub trait Backend: Send + Sync {
     fn catalog(&self)  -> Option<&dyn CatalogOps> { None }
     fn config(&self) -> Option<&dyn ConfigOps> { None }
     fn files(&self) -> Option<&dyn FileOps> { None }   // validate_xml, variables_csv, convert_data (sin Vijeo)
+    fn panels(&self) -> Option<&dyn PanelOps> { None } // objects, edit, insert, toolchest
     fn shutdown(&self) -> Result<(), VijeoError>;           // cierra los proyectos sin guardar y sus instancias
 }
 
@@ -213,8 +216,13 @@ Las reglas de COM sobre `OpenProject`, `NewProject`, `Save` y `Build` (§12.1–
 | `project_goto` | PanelOpen | no destructiva, idempotente | Abre un panel base en la ventana de Vijeo (Navigator + Intro); acepta `BP:\…`, la ruta o el nombre si no se repite |
 | `xml_validate` | XmlValidate | read-only | Sin Vijeo: `System.Xml` contra `XML\public.xsd` (corregido en memoria); errores con línea y columna y resumen por mensaje |
 | `variables_generate_csv` | VariableCsv | no destructiva, idempotente | Sin Vijeo: CSV de Export/Import Variables (OEM o Unicode); con `project`, avisa de nombres repetidos, grupos de escaneo desconocidos e idioma |
+| `variables_import` | VariableImport | destructiva | Import Variables en un target abierto: `csv` o `variables` (genera un CSV OEM en la carpeta de trabajo); `replace_existing` elige «Overwrite existing variables»; devuelve `imported` y la Feedback Zone |
 | `variables_import` | VariableImport | destructiva | Import Variables en un target del proyecto abierto, de un CSV (`csv`) o de la lista `variables` (se genera el CSV OEM en la carpeta de trabajo); conserva las existentes salvo con `replace_existing`; devuelve `imported` y la salida de Vijeo. No funciona tras un `project_build` en la misma instancia |
 | `data_convert` | DataConvert | destructiva | Sin Vijeo: `DataConverter.exe` (`.rcp`/`.dat` → CSV/TXT, CSV → `.rcp` con `recipe_dir`); devuelve los ficheros escritos y la salida |
+| `panel_objects` | PanelObjects | read-only | Select All + Copy en el editor del panel: árbol de objetos con ruta, tipo, rectángulo absoluto, textos y variables |
+| `panel_edit` | PanelObjects | destructiva | `rename`, `move`, `move_to`, `resize`, `set_text`, `replace`, `delete`. Comprueba sobre una copia; luego Cut, edita, Paste y compara; `dry_run` |
+| `panel_insert` | PanelObjects | no destructiva | Piezas de la Toolchest (`toolchest`) u objetos de otro panel (`from_panel` + `object`) en `x`, `y`, con `name` y `replace` |
+| `toolchest_list` | Toolchest | read-only | Sin Vijeo: bibliotecas de `Vijeo-Frame\Toolchest` o, con `library`/`text`, sus piezas |
 
 `ProjectId` se devuelve en `project_new/open` y se pasa al resto; el servidor mantiene la tabla de sesión (proyecto → instancia). Varios proyectos pueden estar abiertos a la vez, cada uno en su instancia. La descarga a HMI queda fuera de la primera versión (D3).
 
@@ -382,6 +390,33 @@ Décima tanda (2026-11-06): las cinco herramientas de bajo riesgo. Son 32 herram
 - **Diagnóstico**: `RemoteTree::describe_all` (todos los `SysTreeView32` de la instancia) y `Vd63Backend::navigator_outline`, que usa el test en vivo `live_goto_and_lint` (con `VIJEO_MCP_LIVE_LINT=<.vdz>` revisa también los scripts de otro proyecto). El smoke `smoke_file_tools` prueba las tres herramientas sin Vijeo a través del MCP.
 
 Undécima tanda (2026-11-26): **`variables_import`** (33 herramientas; capacidad `VariableImport`, `VariableOps::import_csv`). Usa `UiProject::import_variables` (arriba). Acepta `csv` (ruta absoluta de un `.csv`, sólo se lee: puede estar en cualquier carpeta) o `variables` (los mismos `VariableSpec` de `variables_generate_csv`, con sus comprobaciones contra el target y el idioma del proyecto; el CSV se escribe en OEM en `<trabajo>\import\`). `replace_existing` elige «Overwrite existing variables»; si no, las que ya existen no se tocan y salen en `warnings`. `imported` se lee de `N variables were imported.`; si no coincide con las pedidas, lo avisa. Un `Import operation halted` es error `invalid_argument` (no se importó nada). Tras importar, Vijeo guarda la copia de trabajo y el proyecto queda con cambios sin guardar en el `.vdz` (`project_save`). `live_generated_csv_imports` importa las 14 variables por `csv` y luego otra nueva y una repetida (con otro tipo) por `variables`: la nueva entra y la repetida conserva su tipo.
+
+Duodécima tanda (2026-11-26): **objetos de los paneles** (37 herramientas). Formato en el inventario §13.2. Añade las capacidades `PanelObjects` y `Toolchest`, y el trait `PanelOps` (`Backend::panels`).
+- **Formato** (`objects.rs`, puro): `Clip` (ancla, objetos de nivel superior, `DetachedTagSet`) y `Node` (`Leaf` o `Group` con cabecera, hijos y cola).
+  - Lee el compound file del portapapeles, las piezas de la Toolchest y el stream suelto.
+  - Los objetos de nivel superior se separan buscando la siguiente cabecera válida, y `Clip::parse` exige que releer reproduzca el stream byte a byte.
+  - Edita: nombre, rectángulo (con los hijos), cadenas completas o subcadenas (`u32` + UTF-16 y CString de MFC, recalculando longitudes), borrar y ajustar los grupos a sus hijos. Los tamaños de los hijos se recalculan al serializar.
+  - Detecta la cabecera antigua (`LEGACY`) y las piezas que son paneles enteros (`PANEL`).
+- **Toolchest** (`toolchest.rs`): bibliotecas `TCParts.tcp` leídas en memoria (leerlas del disco sector a sector tardaba 57 s; así, 1,4 s). Se buscan por id (`Biblioteca\PartNNN`) o por el nombre del objeto. Hay 849 piezas legibles, 3630 con la cabecera antigua y 2 paneles enteros.
+- **Operaciones** (`panel_ops.rs`, puro): `PanelObject`, `apply` de las operaciones, `prepare_insert` y `differences`. Los textos y las variables salen de las cadenas: `TagDB.X` da la variable y se omiten sus otras formas.
+- **Interfaz**:
+  - `UiProject::copy_objects`/`paste_objects` dan el foco al documento activo (`UiInstance::focus_active_document`, `WM_MDIGETACTIVE`). Con el foco en el Navigator, Copy copia el panel entero, y eso se detecta y es un error.
+  - Select All, Copy, Cut y Paste se mandan con `SendMessageTimeout` (`UiInstance::command_sync`), así que al volver Vijeo ya terminó. Si no termina en 10 s, se tratan los diálogos y se espera a que vuelva a atender (`responsive`).
+  - El portapapeles (`vijeo_ui::clipboard`) se lee con `OleGetClipboard` en un hilo STA propio y se escribe con `SetClipboardData`. `TextBackup` guarda y devuelve el texto del usuario.
+  - Un cerrojo global serializa las operaciones de portapapeles.
+- **`panel_edit`**: Copy, aplicar y validar (sin tocar nada). Luego Cut, aplicar a lo cortado, Paste, Copy y comparar. Si el panel queda vacío, vuelve a pegar lo cortado. Termina guardando la copia de trabajo.
+- **`panel_insert`**: resuelve antes las piezas y los paneles de origen. Copia el destino, pega cada objeto por separado (cada fuente con su `DetachedTagSet`) y compara los objetos nuevos (los últimos del panel) con los esperados.
+- Pruebas:
+  - unitarias con objetos sintéticos (sin datos de Schneider);
+  - `real_toolchest_parts`, que lee y reconstruye todas las piezas de la instalación;
+  - `live_panel_objects_edit_insert`, que hace panel_objects, panel_edit en `dry_run` y de verdad, y panel_insert desde la Toolchest y desde otro panel, y luego guarda y compila aparte.
+
+Decimotercera tanda (2026-11-27): **objetos nuevos desde cero, animaciones, acciones y colores** (mismas 37 herramientas, más opciones en `panel_insert` y `panel_edit`). Formato por clase en el inventario §13.3 y en `docs/objetos/`.
+- **Serialización por clase** (`widgets/`, puro): `bin` (primitivas), `expr` (`CExpression` en BSTR), `action` (`CNativeAction`), `hmi` (colores, etiquetas, fuentes, imágenes y estilo nativo de HMIManagers), `switch`, `lamp`, `display` (DataDisplay: numérico, texto, fecha, hora), `shapes` (Text, Rectangle, Line, Ellipse) y `anim` (la extensión de la cabecera común: gestor de animaciones y sus controles). Cada módulo lee y vuelve a escribir byte a byte todos los objetos de su clase del corpus.
+- **`widgets::build`**: del dominio a objetos. `new_object` (un `NewObject` → `Node` con cabecera, extensión vacía y datos de clase), `animate`/`remove_animations` (visibilidad y parpadeo comparten la animación de visibilidad; cada `AnimationSpec` sustituye a la de su clase), `set_actions` (también actualiza los tipos de acción que repite el estilo nativo) y `set_colors` (los colores pasan a ser propios del objeto, sin biblioteca del proyecto). Los colores del dominio son `RRGGBB`; Vijeo guarda COLORREF `0x00BBGGRR`.
+- **Dominio**: `NewObject` (switch, lamp, numeric_display, string_display, text, rectangle, ellipse, line), `AnimationSpec` (visibility, blink, color, fill, position), `PanelInsertItem.create`/`width`/`height`/`animations`, y `PanelEditOp::{Animate, RemoveAnimations, SetActions, SetColors}`.
+- **Backend**: antes de tocar Vijeo, `object_context` comprueba en el XML del proyecto que existen las variables (`vxml::variable_names`, con los miembros de las estructuradas; las del sistema `_X` no se comprueban) y, si hay «cambiar de panel», busca el número del panel base (`find_base_panel`: `P2` → `"2"`). Sin variables ni paneles no exporta el XML. Los objetos nuevos sin `name` reciben el primer `<Tipo>NN` libre del panel. `Node::shift` y `Node::resize` mueven también los extremos de las líneas, que van en coordenadas absolutas dentro de los datos de la clase.
+- Pruebas: unitarias en `widgets::build` (un objeto de cada tipo se relee igual; animaciones; acciones; colores), `widgets::corpus` (con `VIJEO_MCP_CORPUS=<carpeta de portapapeles>`: ida y vuelta de todas las clases y extensiones) y `live_panel_create_objects` (crea un objeto de cada tipo con animaciones en el panel Alarms del ejemplo Hardwired, los edita, exporta el XML para ver cómo los entiende Vijeo, guarda y compila aparte).
 
 ## 13. Decisiones
 

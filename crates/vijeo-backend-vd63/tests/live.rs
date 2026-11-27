@@ -643,4 +643,232 @@ mod live {
         }
         vijeo_core::Backend::shutdown(&b).unwrap();
     }
+
+    /// panel_objects, panel_edit (dry_run y de verdad) y panel_insert (Toolchest y otro panel) sobre una copia del
+    /// ejemplo; luego se guarda y se compila la copia aparte.
+    #[test]
+    fn live_panel_objects_edit_insert() {
+        use vijeo_core::{PanelEditRequest, PanelInsertRequest, PanelObject};
+        let Some(src) = sample() else { return };
+        fn find<'a>(objs: &'a [PanelObject], name: &str) -> Option<&'a PanelObject> {
+            objs.iter().find_map(|o| if o.name == name { Some(o) } else { find(&o.children, name) })
+        }
+        let b = backend();
+        let clip_before = vijeo_ui::clipboard::get_text();
+        let info = b.projects().unwrap().open(&src).unwrap();
+        let (p, target) = (info.id, info.targets[0].name.clone());
+        let panels = b.panels().unwrap();
+
+        let objs = panels.objects(p, &target, "DateAndTime").unwrap();
+        eprintln!("{}", serde_json::to_string_pretty(&objs).unwrap());
+        assert_eq!(objs.objects.len(), 1);
+        assert_eq!(objs.objects[0].children.len(), 11);
+        let t7 = find(&objs.objects, "Text07").unwrap();
+        assert_eq!(t7.path, "GroupObject01/Text07");
+        assert!(t7.strings.iter().any(|s| s == "Date and Time"), "{:?}", t7.strings);
+        let sw = find(&objs.objects, "SetRTCPLC").unwrap();
+        assert!(sw.variables.iter().any(|v| v.ends_with("xSetRTC")), "{:?}", sw.variables);
+
+        let req = |dry_run: bool| -> PanelEditRequest {
+            serde_json::from_value(serde_json::json!({
+                "project": p.0, "target": target, "panel": "DateAndTime", "dry_run": dry_run,
+                "operations": [
+                    {"op": "rename", "object": "Text07", "new_name": "Titulo"},
+                    {"op": "set_text", "object": "Titulo", "old": "Date and Time", "new": "Fecha y hora"},
+                    {"op": "set_text", "object": "SetRTCPLC", "old": "set\nRTC PLC", "new": "SET\nRELOJ"}
+                ]
+            }))
+            .unwrap()
+        };
+        let dry = panels.edit(&req(true)).unwrap();
+        assert!(!dry.applied);
+        assert!(find(&dry.objects, "Titulo").is_some());
+        assert!(find(&panels.objects(p, &target, "DateAndTime").unwrap().objects, "Text07").is_some(), "dry_run no cambia el panel");
+
+        let done = panels.edit(&req(false)).unwrap();
+        eprintln!("{:?} {:?}", done.changes, done.warnings);
+        assert!(done.applied && done.warnings.is_empty(), "{:?}", done.warnings);
+        let titulo = find(&done.objects, "Titulo").unwrap();
+        assert!(titulo.strings.iter().any(|s| s == "Fecha y hora"));
+        assert_eq!((titulo.left, titulo.top), (t7.left, t7.top));
+        assert!(find(&done.objects, "SetRTCPLC").unwrap().strings.iter().any(|s| s == "SET\nRELOJ"));
+
+        let ins: PanelInsertRequest = serde_json::from_value(serde_json::json!({
+            "project": p.0, "target": target, "panel": "DateAndTime",
+            "items": [
+                {"toolchest": "DateTime\\Date_Display_01", "x": 120, "y": 200, "name": "McpDate1"},
+                {"from_panel": "Cabinet", "object": "Home", "x": 5, "y": 200, "name": "McpHome"}
+            ]
+        }))
+        .unwrap();
+        let r = panels.insert(&ins).unwrap();
+        eprintln!("{:?} {:?}", r.changes, r.warnings);
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+        let d = find(&r.objects, "McpDate1").unwrap();
+        assert_eq!((d.kind.as_str(), d.left, d.top, d.width, d.height), ("SmartObject", 120, 200, 100, 20));
+        let h = find(&r.objects, "McpHome").unwrap();
+        assert_eq!((h.kind.as_str(), h.left, h.top), ("Switch", 5, 200));
+        assert_eq!(vijeo_ui::clipboard::get_text(), clip_before, "el texto del portapapeles se devuelve");
+
+        let vdz = work_dir("panels").join("McpPanels.vdz");
+        b.projects().unwrap().save(p, Some(&vdz), true).unwrap();
+        b.projects().unwrap().close(p, false).unwrap();
+        let built = b.build().unwrap().build_file(&vdz, None).unwrap();
+        eprintln!("{:?}", built.messages);
+        // Sólo lo que ya tenía el ejemplo (4230) y las variables de la pieza sin configurar (4336 McpDate1).
+        for m in built.messages.iter().filter(|m| m.severity == vijeo_core::MessageSeverity::Error) {
+            let ok = m.code == Some(4230) || (m.code == Some(4336) && m.text.contains("McpDate1"));
+            assert!(ok, "error inesperado: {m:?}");
+        }
+        b.shutdown().unwrap();
+    }
+
+    /// panel_insert con `create` (un objeto de cada tipo, con animaciones) y panel_edit de animaciones, acciones y
+    /// colores; después se exporta el XML para ver cómo lo entiende Vijeo, se guarda y se compila la copia.
+    #[test]
+    fn live_panel_create_objects() {
+        use vijeo_core::{PanelEditRequest, PanelInsertRequest, PanelObject};
+        let Some(src) = sample() else { return };
+        fn find<'a>(objs: &'a [PanelObject], name: &str) -> Option<&'a PanelObject> {
+            objs.iter().find_map(|o| if o.name == name { Some(o) } else { find(&o.children, name) })
+        }
+        let b = backend();
+        let info = b.projects().unwrap().open(&src).unwrap();
+        let (p, target) = (info.id, info.targets[0].name.clone());
+        let panels = b.panels().unwrap();
+        let a = "MyController.ATV12";
+        let ins: PanelInsertRequest = serde_json::from_value(serde_json::json!({
+            "project": p.0, "target": target, "panel": "Alarms",
+            "items": [
+                {"create": {"type": "switch", "label": "Marcha", "on_touch": [{"op": "set", "variable": format!("{a}.xCmdFwd")}],
+                    "on_release": [{"op": "word_add", "variable": format!("{a}.iVeloSetpointManMode"), "value": "10"}],
+                    "lamp": format!("{a}.xStatCmdFwd"), "on_color": "FF0000", "font": "medium", "bold": true},
+                 "x": 10, "y": 40, "name": "McpMarcha", "visibility": format!("{a}.xStatManMode")},
+                {"create": {"type": "switch", "label": "Armario", "on_touch": [{"op": "change_panel", "panel": "Cabinet"}]}, "x": 80, "y": 40},
+                {"create": {"type": "lamp", "variable": format!("{a}.xStatDriveRun"), "on_label": "RUN", "off_label": "STOP"}, "x": 150, "y": 40, "name": "McpLamp"},
+                {"create": {"type": "lamp", "variable": format!("{a}.xStatMCB"), "shape": "round"}, "x": 200, "y": 40, "width": 20, "height": 20},
+                {"create": {"type": "numeric_display", "variable": format!("{a}.iVeloSetpointAutoMode"), "input": true, "min": "0", "max": "500"},
+                 "x": 10, "y": 70, "name": "McpVelo"},
+                {"create": {"type": "numeric_display", "variable": "MyController.Energy.reTotalEnergy", "float": true, "digits": 6, "decimals": 1},
+                 "x": 80, "y": 70, "name": "McpEnergia"},
+                {"create": {"type": "text", "text": "Prueba MCP\ncreado desde cero", "font": "medium", "color": "0000FF", "background": "FFFF00"},
+                 "x": 10, "y": 100, "name": "McpTexto", "animations": [{"type": "blink", "variable": format!("{a}.xStatDrive")}]},
+                {"create": {"type": "rectangle", "fill": "00FF00", "line": "000000", "corner": 0}, "x": 180, "y": 100, "width": 40, "height": 30,
+                 "name": "McpRect", "animations": [{"type": "fill", "variable": format!("{a}.iVeloSetpointManMode"), "min": 0, "max": 500}]},
+                {"create": {"type": "ellipse", "fill": "808080"}, "x": 230, "y": 100, "name": "McpLed",
+                 "animations": [{"type": "color", "variable": format!("{a}.xStatDriveRun"), "on_color": "00FF00", "off_color": "FF0000"}]},
+                {"create": {"type": "line", "end_x": 300, "end_y": 140, "color": "FF0000", "arrows": "end"}, "x": 230, "y": 140, "name": "McpLinea",
+                 "animations": [{"type": "position", "variable": format!("{a}.iVeloSetpointManMode"), "min": 0, "max": 100, "dx": 0, "dy": 30}]}
+            ]
+        }))
+        .unwrap();
+        let r = panels.insert(&ins).unwrap();
+        eprintln!("{:#?}\n{:?}\n{:?}", r.changes, r.warnings, r.notes);
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+        let want = [
+            ("McpMarcha", "Switch", 10, 40),
+            ("Switch01", "Switch", 80, 40),
+            ("McpLamp", "Lamp", 150, 40),
+            ("Lamp01", "Lamp", 200, 40),
+            ("McpVelo", "DataDisplay", 10, 70),
+            ("McpEnergia", "DataDisplay", 80, 70),
+            ("McpTexto", "Text", 10, 100),
+            ("McpRect", "Rectangle", 180, 100),
+            ("McpLed", "Circle", 230, 100),
+            ("McpLinea", "Line", 230, 140),
+        ];
+        for (name, kind, x, y) in want {
+            let o = find(&r.objects, name).unwrap_or_else(|| panic!("falta {name}"));
+            assert_eq!((o.kind.as_str(), o.left, o.top), (kind, x, y), "{name}");
+        }
+
+        // panel_edit: animaciones, acciones y colores sobre lo creado.
+        let ed: PanelEditRequest = serde_json::from_value(serde_json::json!({
+            "project": p.0, "target": target, "panel": "Alarms",
+            "operations": [
+                {"op": "animate", "object": "McpRect", "animations": [{"type": "visibility", "variable": format!("{a}.xStatAutoMode"), "invert": true}]},
+                {"op": "remove_animations", "object": "McpTexto"},
+                {"op": "set_actions", "object": "Switch01", "on_touch": [{"op": "toggle", "variable": format!("{a}.xSelManMode")}]},
+                {"op": "set_colors", "object": "McpLamp", "on": "0000FF", "text": "FFFFFF"},
+                {"op": "set_colors", "object": "McpTexto", "text": "FF0000", "fill": "none"},
+                {"op": "move", "object": "McpLinea", "dx": -20, "dy": 0}
+            ]
+        }))
+        .unwrap();
+        let e = panels.edit(&ed).unwrap();
+        eprintln!("{:#?}\n{:?}", e.changes, e.warnings);
+        assert!(e.applied && e.warnings.is_empty(), "{:?}", e.warnings);
+        assert_eq!(find(&e.objects, "McpLinea").unwrap().left, 210);
+
+        // Cómo lo entiende Vijeo: su propio XML.
+        let dir = work_dir("create");
+        let x = b.reports().unwrap().export_xml(p, &dir.join("xml"), true).unwrap();
+        let xml = std::fs::read_to_string(&x.path).unwrap();
+        let obj = |name: &str| -> String {
+            let at = xml.find(&format!("Name=\"{name}\"")).unwrap_or_else(|| panic!("{name} no está en el XML"));
+            let start = xml[..at].rfind('<').unwrap();
+            let tag: String = xml[start + 1..].chars().take_while(|c| c.is_alphanumeric()).collect();
+            let end = xml[start..].find(&format!("</{tag}>")).map(|e| start + e + tag.len() + 3).unwrap_or(start + 2000);
+            xml[start..end.min(xml.len())].to_owned()
+        };
+        for n in ["McpMarcha", "Switch01", "McpLamp", "Lamp01", "McpVelo", "McpEnergia", "McpTexto", "McpRect", "McpLed", "McpLinea"] {
+            eprintln!("---- {n}\n{}", obj(n));
+        }
+        let m = obj("McpMarcha");
+        assert!(m.contains("xCmdFwd") && m.contains("xStatCmdFwd") && m.contains("iVeloSetpointManMode") && m.contains("xStatManMode"), "{m}");
+        assert!(obj("Switch01").contains("xSelManMode"));
+        assert!(obj("McpLed").contains("xStatDriveRun"));
+        assert!(obj("McpRect").contains("xStatAutoMode"));
+        assert!(!obj("McpTexto").contains("xStatDrive"));
+
+        let vdz = dir.join("McpCrear.vdz");
+        b.projects().unwrap().save(p, Some(&vdz), true).unwrap();
+        b.projects().unwrap().close(p, false).unwrap();
+        let built = b.build().unwrap().build_file(&vdz, None).unwrap();
+        eprintln!("{:?}", built.messages);
+        for m in built.messages.iter().filter(|m| m.severity == vijeo_core::MessageSeverity::Error) {
+            assert!(m.code == Some(4230), "error inesperado: {m:?}");
+        }
+        b.shutdown().unwrap();
+    }
+}
+
+/// Lee todas las piezas de la Toolchest de la instalación (sin lanzar Vijeo): las que no tienen la
+/// cabecera antigua (versión 2) tienen que leerse y reconstruirse byte a byte.
+#[test]
+fn real_toolchest_parts() {
+    let Some(inst) = installation() else {
+        eprintln!("sin Vijeo 6.3: se omite");
+        return;
+    };
+    use vijeo_backend_vd63::objects::{Clip, LEGACY, PANEL};
+    use vijeo_backend_vd63::toolchest;
+    let t = std::time::Instant::now();
+    let libs = toolchest::libraries(&inst.frame_dir);
+    assert!(libs.len() > 100, "{} bibliotecas", libs.len());
+    let (mut ok, mut legacy, mut panels, mut failed, mut clips) = (0, 0, 0, Vec::new(), Vec::new());
+    for lib in &libs {
+        for (p, r) in toolchest::read_all(lib) {
+            match r {
+                Ok(c) => {
+                    assert!(!c.objects.is_empty());
+                    ok += 1;
+                    clips.push((format!("{}/{p}", lib.name), c));
+                }
+                Err(e) if e == LEGACY => legacy += 1,
+                Err(e) if e == PANEL => panels += 1,
+                Err(e) => failed.push(format!("{}/{p}: {e}", lib.name)),
+            }
+        }
+    }
+    eprintln!("piezas: {ok} leídas, {legacy} con la cabecera antigua, {panels} paneles enteros, {} ms", t.elapsed().as_millis());
+    for (id, c) in &clips {
+        let back = Clip::from_bytes(&c.to_cfb().unwrap()).unwrap();
+        assert_eq!(back.stream(), c.stream(), "{id}");
+    }
+    assert!(failed.is_empty(), "{failed:?}");
+    assert!(ok >= 800, "{ok}");
+    let (d, c) = toolchest::find(&libs, r"DateTime\Date_Display_01").unwrap();
+    assert_eq!((d.kinds[0].as_str(), d.width, d.height), ("SmartObject", 100, 20));
+    assert_eq!(c.objects[0].children().len(), 2);
 }

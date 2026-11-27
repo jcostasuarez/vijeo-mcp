@@ -5,6 +5,7 @@
 //! - [`process`]: localizar, vigilar y terminar procesos de Vijeo.
 //! - [`discover_installations`]: instalaciones de Vijeo-Designer según el registro.
 
+pub mod clipboard;
 pub mod dialog;
 pub mod feedback;
 mod install;

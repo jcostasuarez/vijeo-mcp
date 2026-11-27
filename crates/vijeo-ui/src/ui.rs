@@ -13,8 +13,10 @@ use std::time::{Duration, Instant};
 
 use vijeo_core::{VijeoError, VijeoResult};
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, WPARAM};
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetDlgCtrlID, GetParent, IsWindowVisible, PostMessageW, EN_KILLFOCUS, SendMessageTimeoutW, BM_CLICK, CBN_CLOSEUP, CBN_SELCHANGE, CBN_SELENDOK, CB_GETCOUNT, CB_GETLBTEXT, CB_GETLBTEXTLEN,
+    GetDlgCtrlID, GetParent, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, EN_KILLFOCUS, SendMessageTimeoutW, BM_CLICK, CBN_CLOSEUP, CBN_SELCHANGE, CBN_SELENDOK, CB_GETCOUNT, CB_GETLBTEXT, CB_GETLBTEXTLEN,
     CB_SETCURSEL, SMTO_ABORTIFHUNG, SMTO_BLOCK, WM_CLOSE, WM_COMMAND, WM_SETTEXT,
 };
 
@@ -199,6 +201,40 @@ impl UiInstance {
                 controls: descendants_of(h).into_iter().map(|c| UiControl { id: unsafe { GetDlgCtrlID(c) }, class: class_of(c), text: text_of(c).replace('&', "") }).collect(),
             })
             .collect()
+    }
+
+    /// Da el foco al documento activo (el editor del panel abierto), como al hacer clic en él: Copy, Cut y
+    /// Paste van a lo que tiene el foco, y con el Navigator copiarían o pegarían el panel entero.
+    /// `false` si no hay ningún documento abierto.
+    pub fn focus_active_document(&self) -> bool {
+        const WM_MDIGETACTIVE: u32 = 0x0229;
+        let Some(frame) = self.frame() else { return false };
+        let Some(client) = descendants_of(frame).into_iter().find(|&h| class_of(h).eq_ignore_ascii_case("MDIClient")) else { return false };
+        let Some(child) = send(client, WM_MDIGETACTIVE, 0, 0).filter(|&c| c != 0) else { return false };
+        let theirs = unsafe { GetWindowThreadProcessId(frame, None) };
+        let mine = unsafe { GetCurrentThreadId() };
+        if theirs == 0 || !unsafe { AttachThreadInput(mine, theirs, true) }.as_bool() {
+            return false;
+        }
+        // El marco hijo MDI pasa el foco a su vista.
+        let _ = unsafe { SetFocus(Some(hwnd(child))) };
+        let _ = unsafe { AttachThreadInput(mine, theirs, false) };
+        true
+    }
+
+    /// Envía el comando de menú `id` al marco y espera a que Vijeo lo termine (hasta `timeout`). `false` si
+    /// no hay marco o no terminó a tiempo (p.ej. porque el comando abrió un diálogo modal).
+    pub fn command_sync(&self, id: u16, timeout: Duration) -> bool {
+        let Some(f) = self.frame() else { return false };
+        let mut result = 0usize;
+        let ms = timeout.as_millis().min(u32::MAX as u128) as u32;
+        let ok = unsafe { SendMessageTimeoutW(f, WM_COMMAND, WPARAM(id as usize), LPARAM(0), SMTO_ABORTIFHUNG | SMTO_BLOCK, ms, Some(&mut result)) };
+        ok.0 != 0
+    }
+
+    /// El hilo de la interfaz atiende mensajes (no está ocupado en un comando).
+    pub fn responsive(&self) -> bool {
+        self.frame().is_some_and(|f| send(f, 0 /* WM_NULL */, 0, 0).is_some())
     }
 
     /// Envía el comando de menú `id` al marco principal. `false` si no hay marco.

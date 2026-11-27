@@ -6,6 +6,7 @@
 > Sexta tanda (2026-11-01): el MCP ya no usa COM para los proyectos abiertos; sólo lo usa para `LoadXMLCommand`. Ver §12.10.
 > Séptima tanda (2026-11-02): el MCP ya no usa COM. Se quitaron `LoadXMLCommand` y `project_import_xml`, y no hay vía de import XML sin COM. Ver §12.11.
 > Octava tanda (2026-11-02): `target_config_set` escribe la configuración de comunicación en el `.vdz` sin Vijeo. Ver §12.12.
+> Auditoría (2026-11-26) de todo `C:\Program Files (x86)\Schneider Electric` para crear y editar pantallas: el portapapeles de Vijeo es una vía de import verificada sin COM, sin licencia y sin registro. Ver §13. El mismo día se mapeó el formato de los objetos (`ObjectData`) y se verificó en vivo crear, mover, renombrar, cambiar textos y cambiar variables (§13.2, prototipo `tools/vdobj`).
 
 Referencias generadas a partir de esta instalación:
 
@@ -797,3 +798,206 @@ Comprobación previa (2026-11-02, con una copia del backup PLANTA_SET3): cada IP
 **Verificado en vivo** (`live_config_set_build_and_reopen`, en `crates\vijeo-backend-vd63\tests\live.rs`):
 - Ejemplo Modbus, con las tres de descarga y el equipo cambiados (7 cambios con la terna de red): compila con 2/2, como el original. `project_open` del resultado funciona, y `project_save` (guardado por Vijeo) conserva las IP, la puerta y el unit ID nuevos. Repetir la misma petición no escribe nada. Con `save_as`, el origen no cambia.
 - Copia de SET03 (`VIJEO_MCP_LIVE_EXTRA`), con la IP y la máscara de descarga y la IP de un equipo cambiadas: compila con 0/7 antes y después.
+
+## 13. Auditoría de la instalación para crear y editar pantallas (2026-11-26)
+
+**Por qué hoy el MCP no crea ni edita pantallas.** Lee los paneles (Export Project → `.vxml`), pero no tiene forma de escribirlos:
+
+- La API COM no la tiene: `GetPanel` devuelve siempre `E_FAIL` y `ImportPanel` es un stub (§12.5, §12.6).
+- La única vía que funcionó fue `LoadXMLCommand` por COM (import del XML del proyecto entero, §12.8). Se quitó en la séptima tanda porque el MCP dejó de usar COM.
+- Sin COM, Import Project sólo acepta `.vdz`. El importador XML pide la licencia con el bit `0x1000`, que no se intenta eludir. La extensión legacy necesita escribir en `HKLM`, opción descartada (§12.11).
+
+**Alcance.** 786 binarios en `C:\Program Files (x86)\Schneider Electric`. Para cada uno se sacaron arquitectura, .NET o nativo, versión, exports e imports clave (portapapeles, arrastrar y soltar, DDE, tuberías, COM, structured storage). Se completó con las clases COM registradas, los menús y aceleradores de `Main.ENU` y pruebas en vivo sobre una copia de `Compact_Hardwired_M221`. Scripts en `tools/` (ver al final).
+
+| Carpeta | Binarios | Resultado |
+|---|---|---|
+| `Vijeo-Designer 6.3` | 395: 358 nativos x86 (MFC/ATL) y 37 .NET | Todo lo de pantallas está en código nativo. Los .NET son el licenciamiento (no se toca) y `VJDDrawEngine.dll` (127 KB, motor de dibujo; API pública leída por reflexión: `HMI.Core`, `HMI.Layouts`, `IDrawEngine`) |
+| `EcoStruxure Machine Expert - Basic` | 301 (247 .NET) | No pilota Vijeo: sólo `Elau.XO.Utility.dll` lee su clave de registro para encontrar el instalador del runtime. Sus «display modules» son del visor TMH2GDB, no de Vijeo |
+| `License Manager`, `Software Update` | 78 | Licencias y actualizaciones (FlexNet). Fuera de alcance |
+| `Drivers` | 12 | Drivers USB y de cables |
+
+**COM.** Hay 16 clases `LocalServer32` registradas, todas de `Vijeo-Frame.exe`: la API de §1, ya auditada. Las 131 `InprocServer32` son 130 componentes internos de Vijeo, que sólo funcionan dentro de su proceso (§10), y un *preview handler* de Machine Expert. Ningún servidor nuevo fuera de proceso.
+
+**Exports.** 98 binarios de `Vijeo-Frame` exportan funciones. Casi todas las DLL COM exportan los mismos 53 símbolos `CxImage`/`CxFile` (librería de imágenes CxImage), que no son funcionalidad de Vijeo. Los relevantes:
+
+| DLL | Exports | Interés para pantallas |
+|---|---|---|
+| `INDEXML.dll` | 1212 | Transformaciones público ↔ privado (§12.8) y `XmlStash` (sólo escritura, ver abajo) |
+| `INDEXMLImport.dll` | `InitVDImportExtensionDLL` | Extensión de import legacy (§12.11) |
+| `ObjectUtil.dll` | 37 | Geometría, `GetRegisteredClipboardFmt` y `GetRegisteredTextClipboardFmt` (registran los formatos de portapapeles de objetos) |
+| `VJDTools.dll` | `TCPartManager` | Toolchest: `AddPart`, `GetPartData`, `OverWritePart`, `CopyPart`… Sólo dentro del proceso |
+| `DDTTagDatabase.dll`, `HMIManagers.dll`, `PFUtility.dll`, `PFUILib.dll` | 3857 / 2950 / 1059 / 2048 | Clases C++ internas (variables, gestores, utilidades). Exigen el estado del proceso de Vijeo |
+
+**Línea de comandos.** `Vijeo-Frame.exe` sólo atiende `/Import <fichero>` (y `-Embedding` de COM). No hay ningún modificador para importar XML ni paneles.
+
+**Comando oculto `0xC14D`: «XML Project» (`*.hmix`).** No está en ningún menú. Abre un diálogo de guardar con el filtro `XML Project|*.hmix||` y llama a `XmlStash::WriteToFile` (`FUN_0048a742` → `FUN_004323f0`). Antes comprueba una opción (`FUN_00414ea0(0x753f, …)`). `XmlStash` está en `INDEXML.dll` y lo usan `BuildTablet.dll` y `TabletPart.dll`, y en ningún binario tiene lector (`ToDocument`, `ToElement`, `WriteToFile`…). Es una exportación del build de Tablet, **no una vía de import**.
+
+**Toolchest.** Import y Export de carpetas (`0xC154`/`0xC155`, menús 6050-6055) con los formatos `63INDE_VIJEO_Toolchest Input Format`, `Output Format` y `Copy Part Format`. Es una biblioteca de objetos, pero ponerlos en un panel exige arrastrar y soltar en la interfaz. Queda como vía secundaria.
+
+### 13.1 Portapapeles de Vijeo: import de objetos y paneles sin COM (verificado)
+
+Vijeo registra formatos de portapapeles propios, con el prefijo `63` de la versión: `63INDE_VIJEO_ObjectClipboard` y `_TextObjectClipboard` (objetos del editor gráfico; `EditorDocument`, `ObjectUtil`), `_WINDOW_CLIPBOARD_COPY_DATA` y `_WINDOW_FOLDER_…` (paneles y carpetas del Navigator), `_DEFINITION_FOLDER_…`, `_PopupWindowClipboardCopy`, `_PANEL_ACTION_…` y `_GLOBAL_ACTION_…`, `_SCRIPT_…` (copiar y mover), `_RECIPE_…` y `_RECIPEGROUPS_…`, `_DATAFILES_…` y `_ObjectDataFile`, `_FORM_…` y `_PartsClipboard`, `_IOManagerClipboardCopy` y los tres de la Toolchest. El dueño del portapapeles es el marco de Vijeo, a través del portapapeles OLE.
+
+**Comandos** (del recurso `Main.ENU`): Select All `0xC043`, Copy `0xC03D`, Cut `0xC03C`, Paste `0xC03E`, New Panel `0xC065`/`0xC066`, Paste Actions `0x40E6`. Se envían con `WM_COMMAND` al marco `AfxMDIFrame80u`. Los ids estándar de MFC (`0xE122`…) no hacen nada.
+
+**Objetos de un panel** (`63INDE_VIJEO_ObjectClipboard`)
+- Con el panel abierto en el editor (`project_goto`), Select All + Copy. Vijeo lo ofrece en diferido como `TYMED_HGLOBAL` y `TYMED_ISTREAM`, junto con un EMF y un `MFPICT` de vista previa. `GetClipboardData` devuelve 0; hay que leerlo con `OleGetClipboard`.
+- El contenido es un **compound file** (OLE Structured Storage, como el `.SwxCF`). Tiene el storage `ObjectData` con el stream `ObjectData` (los objetos, formato en §13.2) y el stream `DetachedTagSet` (las variables a las que se refieren). En `Cabinet`, 2 060 800 bytes, casi todo imágenes.
+- ~~La cabecera del stream lleva un campo de texto (`Home`)~~: corregido en §13.2. `Home` es el primer objeto de `Cabinet` (un Switch), no un campo de cabecera.
+
+**Panel entero** (`63INDE_VIJEO_WINDOW_CLIPBOARD_COPY_DATA`)
+- Copy con el foco en el árbol del Navigator (`AttachThreadInput` + `SetFocus` sobre el `SysTreeView32` 2001, y `WM_COMMAND 0xC03D` al marco). Mandado a la ventana del árbol o a su control no hace nada.
+- Paste (`0xC03E`) con el nodo de la carpeta **Base Panels** seleccionado (`TVM_SELECTITEM`). Con un panel seleccionado, Ctrl+V es Paste Actions y no pega el panel.
+- Además del formato privado, Vijeo pone el nombre del panel como texto (`CF_UNICODETEXT`).
+
+**Pruebas en vivo** (copia de `Compact_Hardwired_M221` en el scratchpad, sin la instancia del usuario abierta):
+
+| Prueba | Resultado |
+|---|---|
+| Copiar los objetos de `Cabinet`, ponerlos en el portapapeles **desde otro proceso** (`SetClipboardData` con el formato registrado) y pegarlos en `DateAndTime` | ✅ Al volver a copiar `DateAndTime` (de 215 040 a 2 272 768 bytes) están todos los textos de `Cabinet` (`Rectangle04`, `Image01`, `NavigationButtonWhite`…). Vijeo renombra los nombres repetidos (`GroupObject01` → `GroupObject02`) |
+| Copiar el panel `DateAndTime` en el Navigator, inyectarlo desde otro proceso y pegarlo en Base Panels | ✅ El árbol pasa de 50 a 51 nodos; tras `project_save`, `panel_list` muestra `BP:\Panel1` |
+| Compilar el proyecto con el panel y los objetos pegados | ✅ Igual que el original: 1 error (`4230`, falta el driver `Schneider_PDL_OMS_Gateway3`, ajeno a las pantallas) y 2 warnings |
+| Cambiar bytes antes de pegar: `Rectangle04` → `Rectangle77` e `Image01` → `Image77` (misma longitud) | ✅ Los objetos pegados se llaman `Rectangle77` e `Image77`. No hay firma ni checksum |
+
+**Conclusión.** Pegar es una vía de import **pública de la propia interfaz**: no usa COM, no pide licencia y no toca el registro. Vijeo valida lo pegado y se encarga de los IDs, de renombrar nombres repetidos, de la biblioteca de imágenes y de enlazar las variables (`DetachedTagSet`). Con ella se pueden:
+
+1. **Crear paneles**: inyectar un panel completo (`WINDOW_CLIPBOARD_COPY_DATA`) en Base Panels.
+2. **Añadir objetos** a un panel: inyectar `ObjectClipboard` en el editor abierto.
+3. **Editar**: Select All + **Cut** (vacía el panel y deja sus objetos en el portapapeles), modificar los bytes y pegar. Verificado en §13.2; no hace falta seleccionar objetos sueltos.
+
+**Lo que falta para convertirlo en herramientas del MCP** (actualizado con §13.2):
+
+- ~~Mapear la serialización de `ObjectData`~~: contenedor, cabecera común, grupos, cadenas y variables mapeados (§13.2). Falta el registro propio de cada clase (colores, fuentes, acciones, animaciones) y la cola de los smart objects (sus propiedades, p. ej. las variables de una pieza de la Toolchest).
+- ~~Seleccionar objetos sueltos~~: innecesario, se edita el panel entero con Cut + Paste.
+- **Comprobar** varios idiomas, variables que no existen en el proyecto de destino (qué hace `CDetachedTagMerge` si no están en el `DetachedTagSet`), referencias por `ObjectID` (Vijeo los renumera al pegar) y la cabecera v2 de la `Image_Library`.
+- **Efecto secundario**: la operación usa el portapapeles del usuario. El MCP debe guardarlo y restaurarlo (al menos el texto; los formatos diferidos de otras aplicaciones no se pueden conservar).
+
+**Comparación con las otras vías:**
+
+| Vía | Estado | Coste |
+|---|---|---|
+| Portapapeles (§13.1, §13.2) | Verificada: crear desde la Toolchest o desde otros paneles, mover, redimensionar, renombrar, cambiar textos y variables | Implementar las herramientas del MCP sobre `tools/vdobj`; mapear por clase sólo lo que haga falta (colores, acciones) |
+| `LoadXMLCommand` por COM (§12.8) | Verificada con el proyecto entero, con sus arreglos (`restore_from`, alarmas, usuarios, display) | Volver a usar COM, sólo para el import. Es decisión del usuario |
+| `CXmlProjectImporter` (§12.11) | Bloqueada por la licencia con el bit `0x1000` | Conseguir la licencia por la vía legítima |
+| Escribir los paneles directamente en el `.SwxCF` | Sin explorar | El mismo formato binario, más los IDs, nombres, imágenes y referencias que en la vía del portapapeles resuelve Vijeo |
+| `.hmix`, Toolchest, CLI, Machine Expert | Descartadas (ver arriba) | — |
+
+**Herramientas** (`tools/`):
+- `pe_inventory.ps1`: inventario de los binarios (dumpbin).
+- `res_menus.ps1`: menús y aceleradores de un binario de recursos.
+- `clip_ui.ps1`: comandos al marco de Vijeo y volcado del portapapeles Win32.
+- `clip_ole_dump.ps1`: volcado del portapapeles OLE (HGLOBAL, IStream, IStorage).
+- `clip_set.ps1`: poner bytes en el portapapeles con un formato registrado.
+- `vdobj/` (Rust, crate aparte): lee, edita y genera `ObjectData` (§13.2).
+
+Los compound files se listaron con un volcador mínimo sobre el crate `cfb` (el que ya usa `swx.rs`).
+
+### 13.2 Formato de `ObjectData` (mapeado 2026-11-26)
+
+Fuentes: Ghidra sobre `SelectTool.dll` (Copy/Paste de objetos), `EditorDocument.dll` (Copy/Paste de paneles), `PFUtility.dll` (traducción de GUID y serializador `CINDESaveHelper`), `BaseObject.dll` (cabecera común) y `BaseGroup.dll` (grupos). Contrastado con el XML exportado de los mismos paneles y con pruebas en vivo.
+
+**Contenedor.** Compound file v3 (512 B por sector), creado con `StgCreateDocfileOnILockBytes`: storage `ObjectData` → stream `ObjectData`, y stream `DetachedTagSet` en la raíz. Al pegar, si el HGLOBAL no es un compound file, `SelectTool` lo lee como el stream `ObjectData` directamente (sin variables). Paste de paneles (`EditorDocument`) abre `ObjectData` o, si no está, `Group`.
+
+**Stream `ObjectData`.**
+
+| Campo | Tipo | Notas |
+|---|---|---|
+| ancla x, y | 2 × i32 | Esquina superior izquierda de la selección. Al pegar, Vijeo comprueba que caiga dentro del panel con 200 px de margen; si no, mensaje (recurso `0xD12`) y no pega |
+| objetos | hasta el final | Cada uno: GUID de clase (16 B, `WriteClassStm`) + datos del objeto. No hay contador: se leen hasta que `INDEOleLoadFromStream` falla |
+
+**GUID de clase.** No es el CLSID registrado: `CPFUtility::CLSIDReverseLookup` lo traduce al guardar y `CLSIDLookup` al cargar, con una tabla de 1096 pares creada en `CPFUtility::GuidConvertInit`. Al cargar: `ReadClassStm` → `CLSIDLookup` → `CoCreateInstance` → `Load(stream)`. Clases gráficas más comunes:
+
+| GUID en el stream | Clase (DLL) | Tipo en el XML |
+|---|---|---|
+| `{3E217838-CB27-4AE0-9CBC-F7C1D1336474}` | GroupObject (`GroupObj.dll`) | `GroupObject` y `SmartObjectType` |
+| `{3BE64A91-D329-4653-9891-AA4EE97464C2}` | RoundRectObject (`RoundRect.dll`) | `Rectangle` |
+| `{CFD4B0CC-678F-4F78-980C-24C14CBE68E1}` | TextObject (`TextObject.dll`) | `Text` |
+| `{347CCED5-5E26-497A-A140-EA017D0272BA}` | SwitchObject (`Switch.dll`) | `Switch` |
+| `{C29C3B73-7AD6-4E52-A271-30A8376E05C2}` | BitmapObject (`Bitmap.dll`) | `Image` |
+| `{5FD5A5E2-2428-4024-9029-EEF4A8FF82A4}` | DataDisplayObject (`DataDisplay.dll`) | `NumericDisplay`… |
+| `{8CCD8CE7-3AC7-447A-BF36-C3A7A9FA73F1}` | PolyLineObject (`Polyline.dll`) | `Polyline` |
+
+La tabla completa de clases gráficas (64) está en `tools/vdobj/src/classes.rs`.
+
+**Cabecera común** (`BaseGraphicalObject::Save`, `BaseObject.dll`), justo detrás del GUID:
+
+| Campo | Tipo | Notas |
+|---|---|---|
+| versión | u8 | 3. La `Image_Library` de la Toolchest usa la 2 (rectángulo en doubles), que Vijeo aún carga |
+| id | u32 | 0 en el portapapeles; Vijeo asigna `ObjectID` nuevos al pegar |
+| rectángulo | 4 × i16 | left, top, right, bottom **absolutos en el panel** e inclusivos (right = left + width − 1). El XML da los hijos de un grupo relativos al grupo |
+| nombre | u32 bytes + UTF-16 | La longitud incluye el NUL final |
+| flags | u8 | Bit 0: hay extensión |
+| extensión | IPersistStream | Si bit 0. Empieza por u32 3; lo normal son 8 bytes (`03000000 00000000`); en los smart objects lleva más datos |
+| marca de fin | u32 | `0x1CED50DA` |
+
+**Datos de la clase**, a continuación: u32 versión de la clase y sus campos, que son propios de cada DLL y se escriben con `IStream::Write` directo. Versiones vistas: RoundRect 2, Text 11, Switch 6, Group 9, Polyline 3, Bitmap 15, DataDisplay 8. La Toolchest trae versiones anteriores (RoundRect 1, Text 9, Group 4 y 8), y Vijeo las sube a la actual al pegar.
+
+**Grupos** (`BaseGroup.dll`, también los smart objects): u32 versión y luego la lista de hijos. Cada hijo lleva un u32 de tamaño, 16 bytes que el lector lee y no usa (basura de memoria en las copias de Vijeo) y `tamaño` bytes de GUID + datos. La lista termina con un u32 0. Después viene una cola que depende de la versión: flags u32 (bit 0: `CSOItem` del smart object), pares de propiedades, XML… En un grupo normal la cola ocupa 20 bytes; en un smart object, entre 27 y 62 KB (sus propiedades). Al editar un hijo hay que recalcular su tamaño y el de todos los grupos que lo contienen.
+
+**Cadenas.**
+- Casi todas: u32 bytes (con NUL) + UTF-16 + NUL. Así van el nombre, los textos (`Language1`, luego el texto), las fuentes y las variables.
+- En algunas partes, CString de MFC: `FF FE FF` + longitud en caracteres (1 byte) + UTF-16 sin NUL. Por ejemplo, el `SOItem` de los smart objects.
+- Los saltos de línea de un texto son `\n` (0x0A).
+
+**Variables.** Un objeto guarda cada referencia en varias formas:
+- interna, con ids de la base de variables: `${F,2:2.1,MyController}.{F,2:2.9,DateAndTime}$.{T,2:2.209,xSetRTC}`;
+- `TagDB.MyController.DateAndTime.xSetRTC`;
+- `MyController.DateAndTime.xSetRTC`.
+
+Al pegar, `CDetachedTagMerge` fusiona el `DetachedTagSet` en el proyecto y `LinkReferredTagByNameInMergedTags` vuelve a enlazar **por nombre**. Verificado: tras cambiar `xCmdFwd` por `xCmdRev` sin tocar el id (`{T,2:2.131,xCmdRev}`), Vijeo lo reescribe con el id real (`{T,2:2.132,xCmdRev}`) y compila sin errores. Un `DetachedTagSet` vacío ocupa 45 bytes.
+
+**Toolchest.** `TCParts.tcp` es un compound file con streams `PartNNN`: 8 bytes (`02000000 00000100`) + el mismo compound file del portapapeles. Hay 138 bibliotecas y 4472 piezas:
+- las 838 que no son imágenes se leen enteras, con los tamaños cuadrando hasta el último byte;
+- las 3630 de `Image_Library` usan la cabecera v2;
+- cada pieza tiene su rectángulo en (0, 0), así que hay que moverla al sitio donde se quiere.
+
+**Validación del prototipo** (`tools/vdobj`): las 838 piezas y las 6 copias reales del portapapeles se leen y se reconstruyen byte a byte igual (`roundtrip`), con y sin la tabla de GUID.
+
+**Pruebas en vivo** (copia de `Compact_Hardwired_M221`, instancia propia; resultados en `t1.vdz`, `t2.vdz` y `t3.vdz` del scratchpad):
+
+| Prueba | Resultado |
+|---|---|
+| Crear tres objetos en `DateAndTime` en un solo paste: `Text07` sacado del grupo, renombrado, con otro texto y llevado a (5, 200); la pieza `Date_Display_01` de la Toolchest (`DateTime/Part350`) en (120, 200); `Text01` con un texto de dos líneas en (220, 205) | ✅ El XML exportado los muestra donde se pidió, sin desplazamiento, con los nombres y textos nuevos. La pieza aparece como `SmartObjectType` con sus propiedades. Al compilar sólo hay 3 errores nuevos, `4336 McpDate1 … requires a variable`: la pieza trae vacías las variables de día, mes y año, igual que si se arrastrara a mano |
+| Editar en el sitio: Select All + Cut en `DateAndTime`; renombrar `Text07` (hijo de un grupo) y cambiar su texto; mover `McpText1` y cambiar su texto; reducir la altura de `McpText2` sólo con el rectángulo; cambiar la etiqueta de un Switch; pegar | ✅ El XML del panel antes y después sólo difiere en esos cambios y en los `ObjectID` (renumerados) |
+| Cambiar variables en `ATV312`: `xCmdFwd` → `xCmdRev` y `xStatCmdFwd` → `xStatCmdRev` (misma longitud), y `xCmdRev` → `xCmdReset` (distinta longitud) en dos Switch | ✅ XML con las variables nuevas, ids internos corregidos por Vijeo y compilación sin errores nuevos |
+
+**Procedimiento de edición** (sin diálogos):
+1. `project_goto` al panel.
+2. Select All (`0xC043`) + Cut (`0xC03C`). Delete (`0xC047`, «Delete...») puede pedir confirmación.
+3. Volcar con `OleGetClipboard`.
+4. Modificar con `vdobj build`.
+5. `SetClipboardData` con el formato registrado.
+6. Paste (`0xC03E`).
+
+Pegar respeta las coordenadas guardadas. Si algo falla a mitad, el volcado del paso 3 permite volver a pegar el panel original.
+
+**Desplazamiento al pegar** (verificado en vivo):
+- Después de un **Copy**, cada Paste desplaza lo pegado 5 px más en x e y que el anterior: +5, +10…
+- Después de un **Cut**, o en una instancia recién abierta sin ningún Copy, el primer Paste queda en sus coordenadas.
+- El contenido del portapapeles no influye: es un contador interno del editor.
+
+`panel_insert` lo compensa. Si aun así algo queda fuera de sitio, corta el panel, lo recoloca y lo pega de una vez.
+
+**Herramientas del MCP** (duodécima tanda, `docs/arquitectura.md` §12bis): `panel_objects`, `panel_edit`, `panel_insert` y `toolchest_list`. El formato está en `crates/vijeo-backend-vd63/src/objects.rs`, y el prototipo `tools/vdobj` queda como herramienta de línea de órdenes.
+
+### 13.3 Datos de cada clase y animaciones (2026-11-27)
+
+Lo que va detrás de la cabecera común, en el formato del portapapeles (flags de guardado 9: etiquetas, fuentes y bibliotecas de color dentro del objeto). Descifrado con Ghidra (funciones `Save`/`SaveXML` de cada DLL, tablas {cadena, valor} de los enumerados del XML) y comprobado con un corpus de 17 paneles copiados de tres proyectos de ejemplo de Machine Expert Basic y piezas de la Toolchest pegadas y vueltas a copiar. Código en `crates/vijeo-backend-vd63/src/widgets/`; gramática detallada en `docs/objetos/`.
+
+| Clase | DLL | Versión | Ida y vuelta (corpus) | Detalle |
+|---|---|---|---|---|
+| Switch | Switch.dll | 6 | 65/65 | `docs/objetos/switch.md` (también `CExpression`, `CNativeAction` y los bloques de HMIManagers) |
+| Lamp | Lamp.dll | 2 | 21/21 | comentario de cabecera de `widgets/lamp.rs` |
+| DataDisplay | DataDisplay.dll | 8 | 65/65 | comentario de cabecera de `widgets/display.rs` |
+| Text, Rectangle, Line, Ellipse | TextObject, RoundRect, LineObject, CircObject | 11, 2, 2, 2 | 164, 49, 12, 3 | `docs/objetos/formas.md` |
+| Animaciones (extensión) | AnimationManager.dll y un .ocx por clase | gestor 3 | 509/509 (y 4387 de la Toolchest) | `docs/objetos/animaciones.md` |
+
+Lo esencial:
+- **Variables**: `CExpression` lleva la expresión tal como la escribe el usuario (`{F,2:2.<id>,Carpeta}.{T,2:2.<id>,Var}`), la compilada (`TagDB.Carpeta.Var…`) y listas de nombres. Vijeo vuelve a enlazar por nombre al pegar, así que los ids pueden ir a 0 y el `DetachedTagSet` vacío (verificado). Los atributos dependen del uso (condición, destino de bit o palabra, valor entero o real, constante). Las animaciones guardan la misma clase en forma `CArchive` (CString y dos campos en i16).
+- **Acciones** (`CNativeAction`): Set 0, Reset 1, MomentaryOn 2, MomentaryOff 3, Toggle 4, WordSet 10, WordAdd 11, Subtract 12, PreviousPanel 20, ChangePanel 21 (con el número del panel base como texto), abrir/cerrar ventana emergente 32/34… En el flujo del Switch las listas van al tocar, **mientras se pulsa** y al soltar (el XML las escribe en otro orden), y el estilo nativo repite los tipos de acción de cada lista.
+- **Colores**: COLORREF `0x00BBGGRR`; el bit `0x08000000` y una bandera aparte marcan los transparentes. Botones, lámparas y displays guardan una biblioteca de colores (filas por estado, celdas por columna); si nombra una biblioteca del proyecto, apunta a ella por nombre.
+- **Animaciones**: van en la extensión de la cabecera común, una por clase como mucho, ordenadas por ranura (Color, Fill, Size, Slider, Position, Rotate, Touch, Value, Visibility, SmartObject). Vijeo carga cada control sin recolocarse con el tamaño guardado: los datos tienen que ser exactos.
+- **Líneas**: sus extremos van en coordenadas absolutas dentro de los datos de la clase; mover sólo la cabecera las deja atrás (Vijeo lo exporta tal cual).
+
+Sin ejemplos en el corpus (gramática sacada del código, sin comprobar con Vijeo): parpadeos, degradados, flechas, rotación de textos, animación de tamaño, color por valor y fuentes TrueType/AGFA propias.

@@ -38,6 +38,19 @@ const CMD_PASTE: u16 = 0xC03E;
 const CMD_SELECT_ALL: u16 = 0xC043;
 /// New Panel (recurso `Main.ENU`; `0xC066` hace lo mismo): con «Base Panels» seleccionado crea un panel base.
 const CMD_NEW_PANEL: u16 = 0xC065;
+/// «Insert» del Navigator (menús 4802/4803 de `Main.ENU`): New Driver con «IO Manager» seleccionado, New
+/// Equipment con un driver seleccionado.
+const CMD_INSERT: u16 = 0xC066;
+/// Configuration… de un equipo (menú 4814).
+const CMD_EQUIPMENT_CONFIG: u16 = 0xC424;
+const IO_MANAGER_NODE: &str = "IO Manager";
+/// Diálogo New Driver: combo de fabricantes, lista de drivers y lista de tipos de equipo (también en Equipment Selection).
+const NEW_DRIVER_MANUFACTURER: i32 = 4817;
+const NEW_DRIVER_LIST: i32 = 2584;
+const EQUIPMENT_LIST: i32 = 4826;
+/// Equipment Configuration de un equipo de red (Modbus TCP): IP (`SysIPAddress32`) y Unit ID.
+const EQUIP_IP: i32 = 1000;
+const EQUIP_UNIT_ID: i32 = 1002;
 /// Lo que se espera a que termine un Copy/Cut/Paste antes de mirar si abrió un diálogo.
 const EDIT_COMMAND_WAIT: Duration = Duration::from_secs(10);
 
@@ -729,6 +742,310 @@ impl UiProject {
         self.wait_until("borrar el panel", self.t.call, |p| p.tree().ok().filter(|t| t.text(item).is_none()).map(|_| ()))
     }
 
+    /// Cancela los diálogos abiertos (diagnóstico).
+    pub fn cancel_dialogs(&mut self) {
+        for d in self.ui.dialogs() {
+            let _ = d.click(IDCANCEL);
+        }
+        let _ = self.wait_until("cerrar el diálogo", self.t.call, |p| p.ui.dialogs().is_empty().then_some(()));
+    }
+
+    /// Diagnóstico: selecciona el nodo `path` bajo el target (cada etiqueta empieza por el segmento, para pasar por
+    /// alto ` [ 172.20.10.167 ]`), manda `cmd` y describe los diálogos (combos y listas incluidos); los cancela.
+    pub fn probe_node_command(&mut self, target: &str, path: &[&str], cmd: u16) -> VijeoResult<Vec<String>> {
+        let tree = self.tree()?;
+        let mut item = self.target_item(target)?;
+        for seg in path {
+            tree.expand(item);
+            let s = seg.to_lowercase();
+            item = tree.children(item).into_iter().find(|&c| tree.text(c).is_some_and(|t| t.to_lowercase().starts_with(&s))).ok_or_else(|| VijeoError::Internal(format!("no hay «{seg}» en {path:?}")))?;
+        }
+        let mut out = vec![format!("seleccionado {:?} focus={}", tree.text(item), tree.focus(item))];
+        std::thread::sleep(Duration::from_millis(500));
+        self.command(cmd)?;
+        let start = Instant::now();
+        while self.ui.dialogs().is_empty() && start.elapsed() < Duration::from_secs(8) {
+            std::thread::sleep(POLL);
+        }
+        std::thread::sleep(Duration::from_millis(800));
+        for d in self.ui.dialogs() {
+            out.push(format!("diálogo «{}» message_box={} texto={:?}", d.info.title, d.info.message_box, d.info.text));
+            for c in &d.controls {
+                let items = if c.class.eq_ignore_ascii_case("ComboBox") {
+                    format!(" {:?}", d.combo_items(c.id))
+                } else if c.class.eq_ignore_ascii_case("ListBox") {
+                    format!(" {:?}", d.list_items(c.id))
+                } else if c.class.eq_ignore_ascii_case("Edit") {
+                    format!(" = {:?}", d.text_of(c.id, "Edit"))
+                } else {
+                    String::new()
+                };
+                out.push(format!("  {} {} {:?}{items}", c.id, c.class, c.text));
+            }
+            let _ = d.click(IDCANCEL);
+        }
+        let _ = self.wait_until("cerrar el diálogo", self.t.call, |p| p.ui.dialogs().is_empty().then_some(()));
+        Ok(out)
+    }
+
+    /// Añade un equipo al target (verificado en vivo, ejemplo Modbus):
+    /// - a un driver que ya tiene (`existing_driver`): «Insert» (`0xC066`) con el driver seleccionado abre
+    ///   «Equipment Selection» (lista 4826);
+    /// - si no, con un driver nuevo: «Insert» con «IO Manager» seleccionado abre «New Driver» (fabricante 4817,
+    ///   drivers 2584, equipos 4826; los drivers que ya tiene el target no salen) y luego «Driver Configuration»,
+    ///   que se acepta con sus valores por defecto. Vijeo crea `<Driver>01` con su primer equipo `<Equipo>01`.
+    ///
+    /// Luego renombra driver y equipo editando su etiqueta y, con `ip`/`unit_id`, los pone en «Equipment
+    /// Configuration» (`0xC424`: IP 1000, Unit ID 1002, como Modbus TCP). Si algo falla después de crear, borra lo
+    /// creado (el driver nuevo o el equipo) y devuelve el error. Devuelve (driver, equipo) como quedan.
+    pub fn add_equipment(&mut self, target: &str, spec: &NewEquipment) -> VijeoResult<(String, String)> {
+        let tree = self.tree()?;
+        let titem = self.target_item(target)?;
+        tree.expand(titem);
+        let io = tree
+            .children(titem)
+            .into_iter()
+            .find(|&c| tree.text(c).is_some_and(|t| t.eq_ignore_ascii_case(IO_MANAGER_NODE)))
+            .ok_or_else(|| VijeoError::Internal(format!("no se encontró «{IO_MANAGER_NODE}» bajo «{target}» en el Navigator")))?;
+        tree.expand(io);
+        let built = self.built;
+        let hint = move |e: VijeoError| match e {
+            VijeoError::Timeout { op, ms } if built => VijeoError::Timeout { op: format!("{op}{AFTER_BUILD_HINT}"), ms },
+            e => e,
+        };
+        // Vijeo puede abrir él mismo «Equipment Configuration» del equipo nuevo (verificado al añadir un equipo a
+        // ModbusTCP): se rellena ahí. Un error de esa configuración se devuelve después de encontrar los nodos, para
+        // poder borrar lo creado.
+        let mut configured = false;
+        let pending: Option<VijeoError>;
+        let (drv, eq, created_driver) = match &spec.existing_driver {
+            Some(name) => {
+                let d = tree
+                    .children(io)
+                    .into_iter()
+                    .find(|&c| tree.text(c).is_some_and(|t| node_name(&t).eq_ignore_ascii_case(name)))
+                    .ok_or_else(|| VijeoError::Internal(format!("no se encontró el driver «{name}» en el Navigator")))?;
+                tree.expand(d);
+                let before = tree.children(d);
+                if !tree.focus(d) {
+                    return Err(VijeoError::Internal(format!("no se pudo seleccionar el driver «{name}» en el Navigator")));
+                }
+                std::thread::sleep(Duration::from_millis(300));
+                self.command(CMD_INSERT)?;
+                let dlg = self.wait_dialog("Equipment Selection", |d| d.has_control(EQUIPMENT_LIST) && !d.has_control(NEW_DRIVER_MANUFACTURER)).map_err(hint)?;
+                choose_equipment(&dlg, spec)?;
+                pending = self.auto_equipment_config("añadir el equipo", spec, &mut configured)?;
+                let eq = self.wait_until("añadir el equipo", self.t.call, |p| {
+                    let t = p.tree().ok()?;
+                    t.expand(d);
+                    t.children(d).into_iter().find(|c| !before.contains(c))
+                })?;
+                (d, eq, false)
+            }
+            None => {
+                let before = tree.children(io);
+                if !tree.focus(io) {
+                    return Err(VijeoError::Internal(format!("no se pudo seleccionar «{IO_MANAGER_NODE}» en el Navigator")));
+                }
+                std::thread::sleep(Duration::from_millis(300));
+                self.command(CMD_INSERT)?;
+                let dlg = self.wait_dialog("New Driver", |d| d.has_control(NEW_DRIVER_MANUFACTURER) && d.has_control(NEW_DRIVER_LIST)).map_err(hint)?;
+                let cancel = |d: &UiDialog, e: VijeoError| {
+                    let _ = d.click(IDCANCEL);
+                    e
+                };
+                let makers = dlg.combo_items(NEW_DRIVER_MANUFACTURER);
+                let m = pick(&makers, &spec.manufacturer).map_err(|why| cancel(&dlg, VijeoError::invalid("manufacturer", why)))?;
+                if !dlg.select(NEW_DRIVER_MANUFACTURER, m) {
+                    return Err(cancel(&dlg, VijeoError::Internal("no se pudo elegir el fabricante en New Driver".into())));
+                }
+                std::thread::sleep(Duration::from_millis(700));
+                let drivers = dlg.list_items(NEW_DRIVER_LIST);
+                let k = pick(&drivers, &spec.driver).map_err(|why| {
+                    cancel(
+                        &dlg,
+                        VijeoError::invalid(
+                            "driver",
+                            format!("{why} (de «{}»). Los drivers que ya tiene el target no salen en New Driver: para añadir un equipo a uno de ellos, indica su nombre en el proyecto", makers[m]),
+                        ),
+                    )
+                })?;
+                if !dlg.list_select(NEW_DRIVER_LIST, k) {
+                    return Err(cancel(&dlg, VijeoError::Internal("no se pudo elegir el driver en New Driver".into())));
+                }
+                std::thread::sleep(Duration::from_millis(700));
+                choose_equipment(&dlg, spec)?;
+                pending = self.auto_equipment_config("crear el driver", spec, &mut configured)?;
+                let (d, eq) = self.wait_until("crear el driver", self.t.call, |p| {
+                    let t = p.tree().ok()?;
+                    t.expand(io);
+                    let d = t.children(io).into_iter().find(|c| !before.contains(c))?;
+                    t.expand(d);
+                    t.children(d).first().map(|&e| (d, e))
+                })?;
+                (d, eq, true)
+            }
+        };
+        let r = match pending {
+            Some(e) => Err(e),
+            None => self.configure_new_equipment(drv, eq, created_driver, spec, configured),
+        };
+        if let Err(e) = r {
+            let (item, what) = if created_driver { (drv, "el driver") } else { (eq, "el equipo") };
+            let tail = match self.delete_node(item) {
+                Ok(()) => format!("; se borró {what} que se había creado"),
+                Err(d) => format!("; {what} quedó creado y no se pudo borrar: {d}"),
+            };
+            self.save()?;
+            return Err(match e {
+                VijeoError::InvalidArgument { field, reason } => VijeoError::InvalidArgument { field, reason: format!("{reason}{tail}") },
+                e => VijeoError::Internal(format!("{e}{tail}")),
+            });
+        }
+        let tree = self.tree()?;
+        let names = (tree.text(drv).map(|t| node_name(&t)).unwrap_or_default(), tree.text(eq).map(|t| node_name(&t)).unwrap_or_default());
+        self.save()?;
+        Ok(names)
+    }
+
+    /// Termina los diálogos tras New Driver / Equipment Selection. Si Vijeo abre «Equipment Configuration», pone
+    /// ahí IP y Unit ID (si se piden) y la acepta; un campo que falta no corta: se acepta con lo que trae y el error
+    /// vuelve como `Ok(Some(error))` para que quien llama borre lo creado.
+    fn auto_equipment_config(&mut self, op: &str, spec: &NewEquipment, configured: &mut bool) -> VijeoResult<Option<VijeoError>> {
+        let Some(dlg) = self.finish_device_dialogs(op)? else { return Ok(None) };
+        let problem = fill_equipment_config(&dlg, spec).err();
+        std::thread::sleep(Duration::from_millis(300));
+        dlg.click(IDOK);
+        *configured = true;
+        self.wait_config_closed(op)?;
+        if let Some(again) = self.finish_device_dialogs(op)? {
+            let _ = again.click(IDCANCEL);
+            return Err(VijeoError::Internal(format!("{op}: «Equipment Configuration» volvió a abrirse")));
+        }
+        Ok(problem)
+    }
+
+    /// Espera a que se cierre «Equipment Configuration» tras OK (el clic es asíncrono). Si Vijeo avisa de un valor
+    /// no válido, se cierra el aviso y la configuración (Cancel) y se devuelve el texto como error.
+    fn wait_config_closed(&mut self, op: &str) -> VijeoResult<()> {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(15) {
+            let ds = self.ui.dialogs();
+            if let Some(m) = ds.iter().find(|d| d.info.message_box && !d.info.title.contains("Configuration")) {
+                let text = m.info.text.clone();
+                let _ = m.click(if m.button_ids().contains(&IDOK) { IDOK } else { IDCANCEL });
+                std::thread::sleep(Duration::from_millis(500));
+                for d in self.ui.dialogs().into_iter().filter(|d| d.info.title.contains("Equipment Configuration")) {
+                    let _ = d.click(IDCANCEL);
+                }
+                return Err(VijeoError::invalid("equipment", format!("{op}: Vijeo no aceptó la configuración del equipo: {text}")));
+            }
+            if !ds.iter().any(|d| d.info.title.contains("Equipment Configuration")) {
+                return Ok(());
+            }
+            std::thread::sleep(POLL);
+        }
+        Err(VijeoError::Internal(format!("{op}: «Equipment Configuration» no se cerró con OK")))
+    }
+
+    /// Nombres, IP y Unit ID del driver/equipo recién creados (IP y Unit ID, si no se pusieron ya en la
+    /// configuración que abrió Vijeo al crearlo).
+    fn configure_new_equipment(&mut self, drv: TreeItem, eq: TreeItem, created_driver: bool, spec: &NewEquipment, configured: bool) -> VijeoResult<()> {
+        if created_driver {
+            if let Some(n) = &spec.driver_name {
+                self.rename_node(drv, n, "driver_name")?;
+            }
+        }
+        if let Some(n) = &spec.name {
+            self.rename_node(eq, n, "name")?;
+        }
+        if configured || (spec.ip.is_none() && spec.unit_id.is_none()) {
+            return Ok(());
+        }
+        let tree = self.tree()?;
+        if !tree.focus(eq) {
+            return Err(VijeoError::Internal("no se pudo seleccionar el equipo en el Navigator".into()));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        self.command(CMD_EQUIPMENT_CONFIG)?;
+        let dlg = self.wait_dialog("Equipment Configuration", |d| d.info.title.contains("Equipment Configuration") || d.has_control(EQUIP_IP))?;
+        if let Err(e) = fill_equipment_config(&dlg, spec) {
+            let _ = dlg.click(IDCANCEL);
+            return Err(e);
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        dlg.click(IDOK);
+        self.wait_config_closed("configurar el equipo")?;
+        match self.finish_device_dialogs("configurar el equipo")? {
+            None => Ok(()),
+            Some(again) => {
+                let _ = again.click(IDCANCEL);
+                Err(VijeoError::Internal("«Equipment Configuration» volvió a abrirse".into()))
+            }
+        }
+    }
+
+    /// Renombra un nodo del Navigator (driver o equipo) editando su etiqueta; un aviso de Vijeo es un error.
+    fn rename_node(&mut self, item: TreeItem, want: &str, field: &str) -> VijeoResult<()> {
+        let tree = self.tree()?;
+        let ok = tree.rename(item, want);
+        std::thread::sleep(Duration::from_millis(800));
+        if let Some(d) = self.ui.dialogs().into_iter().find(|d| d.info.message_box) {
+            let text = d.info.text.clone();
+            let _ = d.click(if d.button_ids().contains(&IDOK) { IDOK } else { IDCANCEL });
+            return Err(VijeoError::invalid(field, format!("Vijeo no aceptó «{want}»: {text}")));
+        }
+        let got = tree.text(item).map(|t| node_name(&t)).unwrap_or_default();
+        if !ok || got != want {
+            return Err(VijeoError::invalid(field, format!("Vijeo dejó el nombre «{got}» en vez de «{want}»")));
+        }
+        Ok(())
+    }
+
+    /// Termina los diálogos que siguen a New Driver / Equipment Selection / Equipment Configuration: «Driver
+    /// Configuration» se acepta tal cual; un aviso es un error con su texto; los demás conocidos se responden.
+    /// Acaba cuando lleva un rato sin diálogos (`None`) o al aparecer «Equipment Configuration», que se devuelve.
+    fn finish_device_dialogs(&mut self, op: &str) -> VijeoResult<Option<UiDialog>> {
+        let start = Instant::now();
+        let mut quiet = Instant::now();
+        while start.elapsed() < self.t.call {
+            let ds = self.ui.dialogs();
+            if ds.is_empty() {
+                if quiet.elapsed() >= Duration::from_millis(1500) {
+                    return Ok(None);
+                }
+            } else {
+                quiet = Instant::now();
+                for d in ds {
+                    if d.info.title.contains("Equipment Configuration") {
+                        return Ok(Some(d));
+                    } else if d.info.title.contains("Driver Configuration") {
+                        d.click(IDOK);
+                    } else if d.info.message_box && !matches!(classify(&d), Answer::Click(..) | Answer::Fill(..)) {
+                        let text = d.info.text.clone();
+                        let _ = d.click(if d.button_ids().contains(&IDOK) { IDOK } else { IDCANCEL });
+                        return Err(VijeoError::invalid("equipment", format!("{op}: Vijeo avisó «{text}»")));
+                    } else {
+                        self.handle_dialogs(&|_| false)?;
+                    }
+                }
+            }
+            std::thread::sleep(POLL);
+        }
+        Err(VijeoError::Timeout { op: op.to_owned(), ms: self.t.call.as_millis() as u64 })
+    }
+
+    /// Borra un nodo del Navigator (driver o equipo): Supr y Yes en la confirmación.
+    fn delete_node(&mut self, item: TreeItem) -> VijeoResult<()> {
+        let tree = self.tree()?;
+        if !tree.press_delete(item) {
+            return Err(VijeoError::Internal("no se pudo seleccionar el nodo en el Navigator".into()));
+        }
+        let d = self.wait_dialog("borrar", |d| sorted_buttons(d) == [IDYES, IDNO])?;
+        d.click(IDYES);
+        self.wait_until("borrar", self.t.call, |p| p.tree().ok().filter(|t| t.text(item).is_none()).map(|_| ()))
+    }
+
     /// Nodo del Navigator que agrupa los paneles base del target.
     fn base_panels_item(&self, tree: &RemoteTree, target: TreeItem) -> Option<TreeItem> {
         let mut level = vec![target];
@@ -915,6 +1232,80 @@ impl Drop for UiProject {
     }
 }
 
+/// Equipo que se añade con [`UiProject::add_equipment`].
+#[derive(Debug, Clone, Default)]
+pub struct NewEquipment {
+    /// Driver del target al que se añade (nombre en el Navigator); `None`: se crea uno con New Driver.
+    pub existing_driver: Option<String>,
+    /// Fabricante y driver como los muestra New Driver (o una parte única del texto).
+    pub manufacturer: String,
+    pub driver: String,
+    /// Tipo de equipo de la lista (`Modbus Equipment`); por defecto, el primero.
+    pub equipment_type: Option<String>,
+    pub driver_name: Option<String>,
+    pub name: Option<String>,
+    pub ip: Option<[u8; 4]>,
+    pub unit_id: Option<u8>,
+}
+
+/// Pone IP y Unit ID (los que pida `spec`) en «Equipment Configuration». No pulsa OK.
+fn fill_equipment_config(dlg: &UiDialog, spec: &NewEquipment) -> VijeoResult<()> {
+    let missing = |field: &str, what: &str| VijeoError::invalid(field, format!("la configuración de este equipo no tiene {what} (sólo los equipos de red como Modbus TCP)"));
+    if let Some(ip) = spec.ip {
+        if !dlg.set_ip(EQUIP_IP, ip) {
+            return Err(missing("ip_address", "dirección IP"));
+        }
+    }
+    if let Some(u) = spec.unit_id {
+        if !dlg.has_control(EQUIP_UNIT_ID) || !dlg.enter_text(EQUIP_UNIT_ID, &u.to_string()) {
+            return Err(missing("unit_id", "Unit ID"));
+        }
+    }
+    Ok(())
+}
+
+/// Elige el tipo de equipo en la lista 4826 (New Driver o Equipment Selection) y pulsa OK.
+fn choose_equipment(dlg: &UiDialog, spec: &NewEquipment) -> VijeoResult<()> {
+    let items = dlg.list_items(EQUIPMENT_LIST);
+    let i = match &spec.equipment_type {
+        Some(w) => pick(&items, w).map_err(|why| {
+            let _ = dlg.click(IDCANCEL);
+            VijeoError::invalid("equipment_type", why)
+        })?,
+        None if !items.is_empty() => 0,
+        None => {
+            let _ = dlg.click(IDCANCEL);
+            return Err(VijeoError::Internal("la lista de tipos de equipo está vacía".into()));
+        }
+    };
+    if !dlg.list_select(EQUIPMENT_LIST, i) {
+        let _ = dlg.click(IDCANCEL);
+        return Err(VijeoError::Internal("no se pudo elegir el tipo de equipo".into()));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    dlg.click(IDOK);
+    Ok(())
+}
+
+/// Elemento de una lista de Vijeo: el que es `want` sin distinguir mayúsculas o, si no, el único que lo contiene.
+fn pick(items: &[String], want: &str) -> Result<usize, String> {
+    let w = want.trim().to_lowercase();
+    if let Some(i) = items.iter().position(|x| x.trim().to_lowercase() == w) {
+        return Ok(i);
+    }
+    let hits: Vec<usize> = items.iter().enumerate().filter(|(_, x)| !w.is_empty() && x.to_lowercase().contains(&w)).map(|(i, _)| i).collect();
+    match hits.as_slice() {
+        [i] => Ok(*i),
+        [] => Err(format!("«{want}» no está entre {items:?}")),
+        _ => Err(format!("«{want}» es ambiguo: {:?}", hits.iter().map(|&i| &items[i]).collect::<Vec<_>>())),
+    }
+}
+
+/// Nombre de un driver o equipo en el Navigator, sin la dirección que Vijeo pone detrás (`M221 [ 172.20.10.167 ]`).
+fn node_name(label: &str) -> String {
+    label.split(" [").next().unwrap_or(label).trim().to_owned()
+}
+
 /// PanelID y nombre de la etiqueta de un panel base en el Navigator (`5: Panel5` → `(5, "Panel5")`).
 fn parse_panel_label(label: &str) -> Option<(u32, String)> {
     let (id, name) = label.split_once(": ")?;
@@ -1004,6 +1395,19 @@ mod tests {
         assert!(navigator_label_is("Carpeta", "carpeta"));
         assert!(!navigator_label_is("1: Start", "1"));
         assert!(!navigator_label_is("A: Start", "Start"));
+    }
+
+    #[test]
+    fn device_lists() {
+        let drivers: Vec<String> = ["Jbus (RTU)", "Modbus (RTU)", "Modbus Slave", "Modbus TCP/IP", "XWAY TCP/IP"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(pick(&drivers, "modbus (rtu)"), Ok(1));
+        assert_eq!(pick(&drivers, "Modbus TCP"), Ok(3));
+        assert_eq!(pick(&drivers, "xway"), Ok(4));
+        assert!(pick(&drivers, "modbus").unwrap_err().contains("ambiguo"));
+        assert!(pick(&drivers, "Profibus").unwrap_err().contains("no está"));
+        assert_eq!(node_name("M221_Controller [ 172.20.10.167 ]"), "M221_Controller");
+        assert_eq!(node_name("ModbusRTU01 [ COM1 ]"), "ModbusRTU01");
+        assert_eq!(node_name("ModbusTCP"), "ModbusTCP");
     }
 
     #[test]

@@ -43,6 +43,7 @@ const TOOL_CAPS: &[(&str, Capability)] = &[
     ("script_lint", Capability::ScriptLint),
     ("project_goto", Capability::PanelOpen),
     ("panel_create", Capability::PanelCreate),
+    ("equipment_add", Capability::EquipmentAdd),
     ("xml_validate", Capability::XmlValidate),
     ("variables_generate_csv", Capability::VariableCsv),
     ("variables_import", Capability::VariableImport),
@@ -75,6 +76,10 @@ del proyecto (Export Project, unos segundos la primera vez; se reutiliza mientra
 Necesitan SupportsXMLImportExport=1 en el registro de Vijeo.
 - project_export_xml escribe el XML completo del proyecto (.vxml, public.xsd: pantallas, objetos, animaciones, \
 acciones, variables, alarmas…) con sus imágenes. No hay herramienta para importarlo.
+- equipment_add añade un equipo de comunicación a un target abierto: con `driver` = nombre de un driver que ya \
+tiene (target_config) se añade a él; si no, se crea con New Driver (`driver` como lo muestra Vijeo: `Modbus TCP`, \
+`Modbus (RTU)`…; si no está, el error lista los disponibles). Nombre, y en equipos de red IP y Unit ID; el driver \
+nuevo queda con su configuración por defecto. Luego project_save.
 - panel_create crea un panel base vacío en un target (con el nombre pedido; Vijeo le da el siguiente PanelID) y lo \
 deja abierto; luego panel_insert le pone objetos. Como project_goto, no funciona tras un project_build en la misma \
 instancia.
@@ -810,6 +815,15 @@ impl VijeoServer {
     #[tool(annotations(destructive_hint = false, idempotent_hint = false, open_world_hint = false))]
     async fn panel_create(&self, Parameters(p): Parameters<PanelCreateParams>) -> ToolResult<CreatedPanel> {
         self.blocking(move |b| ops(b.targets(), Capability::PanelCreate, b)?.create_panel(ProjectId(p.project), &p.target, p.name.as_deref())).await
+    }
+
+    /// Añade un equipo de comunicación (PLC, variador…) a un target del proyecto abierto: a un driver que ya tiene
+    /// (por su nombre en el proyecto, como en target_config) o en un driver nuevo (New Driver de Vijeo, por el nombre
+    /// que muestra el diálogo), con su nombre y, en equipos de red como Modbus TCP, IP y Unit ID. Devuelve el driver
+    /// como queda (equipos, direcciones). Después: project_save.
+    #[tool(annotations(destructive_hint = false, idempotent_hint = false, open_world_hint = false))]
+    async fn equipment_add(&self, Parameters(p): Parameters<EquipmentAddRequest>) -> ToolResult<EquipmentAddResult> {
+        self.blocking(move |b| ops(b.targets(), Capability::EquipmentAdd, b)?.add_equipment(&p)).await
     }
 
     /// Valida un XML de proyecto (.vxml) contra el public.xsd de la instalación, sin Vijeo. Devuelve los errores con

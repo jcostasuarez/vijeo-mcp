@@ -24,6 +24,7 @@ const TOOL_CAPS: &[(&str, Capability)] = &[
     ("project_save", Capability::ProjectLifecycle),
     ("project_close", Capability::ProjectLifecycle),
     ("project_rename", Capability::ProjectLifecycle),
+    ("project_show_in_vijeo", Capability::ProjectLifecycle),
     ("target_list", Capability::TargetManage),
     ("target_add", Capability::TargetManage),
     ("target_delete", Capability::TargetManage),
@@ -44,6 +45,8 @@ const TOOL_CAPS: &[(&str, Capability)] = &[
     ("project_goto", Capability::PanelOpen),
     ("panel_create", Capability::PanelCreate),
     ("equipment_add", Capability::EquipmentAdd),
+    ("panel_rename", Capability::PanelManage),
+    ("panel_delete", Capability::PanelManage),
     ("xml_validate", Capability::XmlValidate),
     ("variables_generate_csv", Capability::VariableCsv),
     ("variables_import", Capability::VariableImport),
@@ -63,6 +66,9 @@ project_build/variable_* → project_save → project_close.
 (Vijeo-Manager\\MCP_TMP_*, se borra al cerrar); abrir tarda unos 10-30 s. El .vdz sólo cambia con project_save \
 (y con target_config_set, que no abre Vijeo).
 - Sólo se trabaja con .vdz y nunca dentro del workspace Vijeo-Manager ni de otras carpetas protegidas.
+- Un proyecto creado o guardado con el MCP es un .vdz en la ruta indicada: **no sale en la lista de proyectos de \
+Vijeo** (que es Vijeo-Manager) hasta abrirlo. Al terminar, dile al usuario la ruta del .vdz; si quiere verlo en \
+Vijeo, project_show_in_vijeo lo abre en una ventana suya (Vijeo lo importa a su lista).
 - Los modelos HMI se eligen con catalog_list_models (sólo los `creatable` se pueden crear; `probe` indica que \
 se comprobó creando el target en esta instalación); project_new exige el primer target.
 - project_build/target_build devuelven el texto de cada error y warning (con `path` compilan una copia de un \
@@ -81,8 +87,10 @@ tiene (target_config) se añade a él; si no, se crea con New Driver (`driver` c
 `Modbus (RTU)`…; si no está, el error lista los disponibles). Nombre, y en equipos de red IP y Unit ID; el driver \
 nuevo queda con su configuración por defecto. Luego project_save.
 - panel_create crea un panel base vacío en un target (con el nombre pedido; Vijeo le da el siguiente PanelID) y lo \
-deja abierto; luego panel_insert le pone objetos. Como project_goto, no funciona tras un project_build en la misma \
-instancia.
+deja abierto; luego panel_insert le pone objetos. panel_rename renombra un panel base o una ventana emergente \
+(kind=popup; su número no cambia y las acciones siguen valiendo); panel_delete la borra, negándose si alguna \
+acción, el panel inicial u otra propiedad la usa (lista dónde; con force la borra igual). Como project_goto, no \
+funcionan tras un project_build en la misma instancia.
 - Pantallas (paneles base de un proyecto abierto), con el portapapeles de Vijeo como Copiar/Pegar: panel_objects \
 lista los objetos (ruta Grupo/Objeto, tipo, posición absoluta, textos y variables; de los smart objects, sus \
 propiedades); panel_edit renombra, mueve, redimensiona, cambia textos, sustituye variables (Vijeo las vuelve a \
@@ -175,6 +183,16 @@ pub struct ProjectNewParams {
 pub struct ProjectOpenParams {
     /// Ruta absoluta de un .vdz.
     pub path: PathBuf,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ProjectShowParams {
+    /// Ruta absoluta del .vdz que se abre (o `project`).
+    #[serde(default)]
+    pub path: Option<PathBuf>,
+    /// Proyecto abierto en el MCP: se abre su .vdz tal como está guardado (o `path`).
+    #[serde(default)]
+    pub project: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -340,6 +358,34 @@ pub struct PanelCreateParams {
     /// Nombre del panel nuevo (por defecto, el `Panel<n>` que le dé Vijeo). No puede repetir el de otro panel base.
     #[serde(default)]
     pub name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PanelRenameParams {
+    pub project: u32,
+    pub target: String,
+    /// `base` (por defecto) o `popup` (ventana emergente).
+    #[serde(default)]
+    pub kind: PanelKind,
+    /// Panel base: ruta de panel_list (`BP:\Carpeta\Panel`), ruta sin `BP:\` o el nombre si no se repite. Popup: nombre
+    /// de la ventana (o `Carpeta\Ventana`).
+    pub panel: String,
+    /// Nombre nuevo: una letra y luego letras, dígitos o `_` (la convención de Vijeo).
+    pub new_name: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PanelDeleteParams {
+    pub project: u32,
+    pub target: String,
+    /// `base` (por defecto) o `popup` (ventana emergente, con sus paneles).
+    #[serde(default)]
+    pub kind: PanelKind,
+    /// Como en panel_rename.
+    pub panel: String,
+    /// Borrar aunque haya acciones u otras referencias a la pantalla (quedan sin destino y se devuelven).
+    #[serde(default)]
+    pub force: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -595,6 +641,15 @@ impl VijeoServer {
         self.blocking(move |b| ops(b.projects(), Capability::ProjectLifecycle, b)?.open(&p.path)).await
     }
 
+    /// Abre un .vdz en una ventana de Vijeo para el usuario, como el doble clic: Vijeo lo importa a su lista de
+    /// proyectos (Vijeo-Manager) y desde entonces lo ve ahí. Úsalo cuando el usuario quiera ver en Vijeo un proyecto
+    /// creado o guardado con el MCP (los .vdz del MCP no salen en esa lista hasta abrirlos). La ventana es del usuario:
+    /// el MCP no la controla. Se niega si Vijeo ya tiene un proyecto con ese nombre.
+    #[tool(annotations(destructive_hint = false, idempotent_hint = false, open_world_hint = false))]
+    async fn project_show_in_vijeo(&self, Parameters(p): Parameters<ProjectShowParams>) -> ToolResult<ShownProject> {
+        self.blocking(move |b| ops(b.projects(), Capability::ProjectLifecycle, b)?.show_in_vijeo(p.path.as_deref(), p.project.map(ProjectId))).await
+    }
+
     /// Nombre, ruta, cambios sin guardar y targets de un proyecto abierto.
     #[tool(annotations(read_only_hint = true, open_world_hint = false))]
     async fn project_info(&self, Parameters(p): Parameters<ProjectParam>) -> ToolResult<ProjectInfo> {
@@ -815,6 +870,21 @@ impl VijeoServer {
     #[tool(annotations(destructive_hint = false, idempotent_hint = false, open_world_hint = false))]
     async fn panel_create(&self, Parameters(p): Parameters<PanelCreateParams>) -> ToolResult<CreatedPanel> {
         self.blocking(move |b| ops(b.targets(), Capability::PanelCreate, b)?.create_panel(ProjectId(p.project), &p.target, p.name.as_deref())).await
+    }
+
+    /// Renombra un panel base o una ventana emergente (kind=popup) del target en el Navigator. Su número (PanelID o
+    /// WindowID) no cambia, así que las acciones que la abren siguen valiendo. Después: project_save.
+    #[tool(annotations(destructive_hint = false, idempotent_hint = false, open_world_hint = false))]
+    async fn panel_rename(&self, Parameters(p): Parameters<PanelRenameParams>) -> ToolResult<RenamedPanel> {
+        self.blocking(move |b| ops(b.targets(), Capability::PanelManage, b)?.rename_panel(ProjectId(p.project), &p.target, p.kind, &p.panel, &p.new_name)).await
+    }
+
+    /// Borra un panel base o una ventana emergente (kind=popup, con sus paneles) del target. Si alguna acción
+    /// (cambiar de panel, abrir/cerrar el popup), el panel inicial u otra propiedad la usa, se niega y lista dónde;
+    /// con force la borra igual y devuelve esas referencias sin destino. Después: project_build y project_save.
+    #[tool(annotations(destructive_hint = true, idempotent_hint = false, open_world_hint = false))]
+    async fn panel_delete(&self, Parameters(p): Parameters<PanelDeleteParams>) -> ToolResult<DeletedPanel> {
+        self.blocking(move |b| ops(b.targets(), Capability::PanelManage, b)?.delete_panel(ProjectId(p.project), &p.target, p.kind, &p.panel, p.force)).await
     }
 
     /// Añade un equipo de comunicación (PLC, variador…) a un target del proyecto abierto: a un driver que ya tiene

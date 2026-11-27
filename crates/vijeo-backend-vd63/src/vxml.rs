@@ -318,6 +318,58 @@ pub fn panel_ids(t: Node) -> Vec<PanelId> {
     }
     out
 }
+/// Pantalla que se puede renombrar o borrar desde el Navigator: un panel base o una ventana emergente.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Screen {
+    pub popup: bool,
+    /// Ruta dentro del grupo (`Carpeta\Panel`; en los popups, `Carpeta\Ventana`).
+    pub path: String,
+    pub name: String,
+    /// Número del Navigator (`21: RFID_1`, `1: ComErrorCodes`): PanelID de los paneles base, WindowID de los popups.
+    pub number: u32,
+    /// Ids que guardan las acciones (`P21`; en los popups, los de sus paneles: `P10001`).
+    pub panel_ids: Vec<String>,
+}
+
+/// Paneles base y ventanas emergentes del target, con sus ids.
+pub fn screens(t: Node) -> Vec<Screen> {
+    let mut out = Vec::new();
+    let Some(gp) = child(t, "GraphicalPanels") else { return out };
+    let num = |s: Option<String>, prefix: char| s.and_then(|s| s.strip_prefix(prefix).and_then(|n| n.parse().ok()));
+    if let Some(h) = child(gp, "BasePanels") {
+        collect_panels(h, "Panel", "", &mut |path, p| {
+            if let (Some(id), Some(number)) = (attr(p, "ID"), num(attr(p, "ID"), 'P')) {
+                out.push(Screen { popup: false, path: path.to_owned(), name: attr(p, "Name").unwrap_or_default(), number, panel_ids: vec![id] });
+            }
+        });
+    }
+    if let Some(h) = child(gp, "PopupWindows") {
+        collect_panels(h, "Window", "", &mut |path, w| {
+            if let Some(number) = num(attr(w, "WindowID"), 'W') {
+                let panel_ids = child(w, "Panels").into_iter().flat_map(elements).filter(|c| c.has_tag_name("Panel")).filter_map(|c| attr(c, "ID")).collect();
+                out.push(Screen { popup: true, path: path.to_owned(), name: attr(w, "Name").unwrap_or_default(), number, panel_ids });
+            }
+        });
+    }
+    out
+}
+
+/// Dónde se usa alguno de los ids de panel `ids` (`P21`): atributos del target con ese valor exacto
+/// (`ChangePanelID`, `PopupPanelID`, `InitialPanelID`, seguridad…) fuera de los propios paneles: lo que está dentro
+/// (el botón del popup que lo cierra) se borra con ellos.
+pub fn panel_id_references(t: Node, ids: &[String]) -> Vec<String> {
+    let own = |n: &Node| n.ancestors().any(|a| a.has_tag_name("Panel") && a.attribute("ID").is_some_and(|id| ids.iter().any(|x| x == id)));
+    let mut out = Vec::new();
+    for n in t.descendants().filter(|n| n.is_element() && !own(n)) {
+        for a in n.attributes() {
+            if a.name() != "ID" && ids.iter().any(|id| id == a.value()) {
+                out.push(format!("{} @{}", location(n), a.name()));
+            }
+        }
+    }
+    out
+}
+
 
 /// Rutas de los paneles base (`BP:\Panel`, `BP:\Carpeta\Panel`).
 pub fn base_panel_refs(t: Node) -> Vec<PanelRef> {
@@ -570,5 +622,30 @@ mod tests {
         assert_eq!(select_targets(&doc, Some("hmi1")).unwrap().len(), 1);
         assert!(matches!(select_targets(&doc, Some("X")), Err(VijeoError::TargetNotFound(_))));
         assert_eq!(project_name(&doc).as_deref(), Some("Demo"));
+    }
+
+    #[test]
+    fn screens_and_their_references() {
+        let xml = r#"<Project Name="Demo"><Target ID="T1" Name="HMI1">
+  <TargetProperties InitialPanelID="P1"/>
+  <GraphicalPanels>
+    <BasePanels>
+      <Panel Name="Start" ID="P1"><Switch Name="Ir"><WhenPress><Special SpecialFunction="ChangePanel" ChangePanelID="P21"/></WhenPress></Switch>
+        <Switch Name="Pop"><WhenPress><PopPanel PopupPanelAction="Open" PopupPanelID="P10001"/></WhenPress></Switch></Panel>
+      <Folder Name="Sub"><Panel Name="RFID_1" ID="P21"/></Folder>
+    </BasePanels>
+    <PopupWindows><Folder Name="F"><Window Name="ComErrorCodes" WindowID="W1"><Panels><Panel Name="Panel1" ID="P10001"><Switch Name="X"><WhenPress><PopPanel PopupPanelAction="Close" PopupPanelID="P10001"/></WhenPress></Switch></Panel></Panels></Window></Folder></PopupWindows>
+  </GraphicalPanels></Target></Project>"#;
+        let doc = parse(xml).unwrap();
+        let t = targets(&doc)[0];
+        let s = screens(t);
+        let summary: Vec<(bool, &str, u32, Vec<&str>)> = s.iter().map(|s| (s.popup, s.path.as_str(), s.number, s.panel_ids.iter().map(String::as_str).collect())).collect();
+        assert_eq!(summary, [(false, "Start", 1, vec!["P1"]), (false, r"Sub\RFID_1", 21, vec!["P21"]), (true, r"F\ComErrorCodes", 1, vec!["P10001"])]);
+        assert_eq!(panel_id_references(t, &s[0].panel_ids), ["TargetProperties @InitialPanelID"]);
+        let r = panel_id_references(t, &s[1].panel_ids);
+        assert_eq!(r.len(), 1);
+        assert!(r[0].contains("Switch «Ir»") && r[0].ends_with("@ChangePanelID"), "{r:?}");
+        let r = panel_id_references(t, &s[2].panel_ids);
+        assert!(r.len() == 1 && r[0].contains("Switch «Pop»"), "{r:?}");
     }
 }

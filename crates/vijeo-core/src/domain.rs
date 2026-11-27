@@ -24,8 +24,20 @@ pub struct ProjectInfo {
     /// detecta, pero project_save también lo guarda).
     pub dirty: bool,
     pub targets: Vec<TargetInfo>,
-    /// Qué hizo Vijeo con la copia al abrirla (actualizar la versión, convertir un modelo no soportado…).
+    /// Qué hizo Vijeo con la copia al abrirla (actualizar la versión, convertir un modelo no soportado…) y, al
+    /// crear o guardar, dónde quedó el `.vdz`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+/// `.vdz` abierto en Vijeo para el usuario con `project_show_in_vijeo`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ShownProject {
+    pub path: PathBuf,
+    /// Nombre con el que aparece en la lista de proyectos de Vijeo.
+    pub name: String,
+    /// Proceso de Vijeo-Frame lanzado (del usuario: el MCP no lo controla).
+    pub pid: u32,
     pub notes: Vec<String>,
 }
 
@@ -236,6 +248,42 @@ pub struct CreatedPanel {
     pub name: String,
     /// PanelID que le dio Vijeo (el siguiente libre): el número de «cambiar de panel» y del Navigator (`5: Motores`).
     pub panel_id: u32,
+}
+
+/// Qué clase de pantalla es: un panel base o una ventana emergente (popup).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PanelKind {
+    #[default]
+    Base,
+    Popup,
+}
+
+/// Pantalla renombrada con `panel_rename`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct RenamedPanel {
+    pub target: String,
+    pub kind: PanelKind,
+    /// Ruta anterior (`BP:\Carpeta\Panel`; en los popups, `Carpeta\Ventana`).
+    pub old_path: String,
+    /// Ruta nueva, en el mismo formato.
+    pub path: String,
+    pub name: String,
+    /// PanelID (paneles base) o WindowID (popups) del Navigator, que no cambia: las acciones que la abren siguen valiendo.
+    pub id: u32,
+    pub notes: Vec<String>,
+}
+
+/// Pantalla borrada con `panel_delete`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct DeletedPanel {
+    pub target: String,
+    pub kind: PanelKind,
+    pub path: String,
+    /// Referencias a la pantalla que quedaron sin destino (acciones de cambiar de panel o abrir el popup, panel
+    /// inicial, seguridad…): `project_build` da el error 2010 «invalid selection» en cada una. Vacío si no había ninguna.
+    pub dangling_references: Vec<String>,
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]

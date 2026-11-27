@@ -116,6 +116,15 @@ fn smoke_list_and_catalog() {
     assert!(!err, "{modbus}");
     assert!(modbus["drivers"].as_array().unwrap().iter().any(|d| d["id"] == "Schneider_Modbus_TCP"), "{modbus}");
 
+    // project_show_in_vijeo: los errores se detectan antes de lanzar Vijeo (ninguno de estos lo lanza).
+    assert!(names.contains(&"project_show_in_vijeo"));
+    for args in [json!({}), json!({"path": r"C:\no\existe.vdz", "project": 1}), json!({"path": r"C:\no-existe-mcp\x.vdz"}), json!({"path": r"C:\x.txt"})] {
+        let (err, msg) = c.call("project_show_in_vijeo", args);
+        assert!(err && msg.as_str().unwrap().contains("[invalid_argument]"), "{msg}");
+    }
+    let (err, msg) = c.call("project_show_in_vijeo", json!({"project": 99}));
+    assert!(err && msg.as_str().unwrap().contains("[project_not_found]"), "{msg}");
+
     // Validación del nombre antes de tocar Vijeo.
     let (err, msg) = c.call("project_rename", json!({"project": 99, "name": "a.b"}));
     assert!(err && msg.as_str().unwrap().contains("[invalid_argument]"), "{msg}");
@@ -134,6 +143,15 @@ fn smoke_list_and_catalog() {
         assert!(err && msg.as_str().unwrap().contains("[invalid_argument]"), "{msg}");
     }
     let (err, msg) = c.call("equipment_add", json!({"project": 99, "target": "HMI1", "driver": "Modbus TCP"}));
+    assert!(err && msg.as_str().unwrap().contains("[project_not_found]"), "{msg}");
+    assert!(names.contains(&"panel_rename") && names.contains(&"panel_delete"));
+    let (err, msg) = c.call("panel_rename", json!({"project": 99, "target": "HMI1", "panel": "Start", "new_name": "Inicio 2"}));
+    assert!(err && msg.as_str().unwrap().contains("[invalid_argument]"), "{msg}");
+    let (err, msg) = c.call("panel_rename", json!({"project": 99, "target": "HMI1", "kind": "popup", "panel": "Pop", "new_name": "Avisos"}));
+    assert!(err && msg.as_str().unwrap().contains("[project_not_found]"), "{msg}");
+    let (err, _) = c.call("panel_rename", json!({"project": 99, "target": "HMI1", "kind": "master", "panel": "Std", "new_name": "X"}));
+    assert!(err, "kind desconocido");
+    let (err, msg) = c.call("panel_delete", json!({"project": 99, "target": "HMI1", "panel": "Start"}));
     assert!(err && msg.as_str().unwrap().contains("[project_not_found]"), "{msg}");
 
     let (err, status) = c.call("vijeo_status", json!({}));

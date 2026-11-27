@@ -125,6 +125,9 @@ pub trait ProjectOps: Send + Sync {
     fn list(&self) -> Vec<ProjectSummary>;
     /// Cambia el nombre del proyecto (no el del `.vdz`).
     fn rename(&self, p: ProjectId, name: &str) -> VijeoResult<ProjectInfo>;
+    /// Abre un `.vdz` (`path`, o el de un proyecto abierto) en una ventana de Vijeo del usuario, como el doble clic:
+    /// Vijeo lo importa a su lista de proyectos. Se niega si ya hay uno con ese nombre en la lista.
+    fn show_in_vijeo(&self, path: Option<&Path>, project: Option<ProjectId>) -> VijeoResult<ShownProject>;
 }
 
 pub trait TargetOps: Send + Sync {
@@ -140,6 +143,12 @@ pub trait TargetOps: Send + Sync {
     fn create_panel(&self, p: ProjectId, target: &str, name: Option<&str>) -> VijeoResult<CreatedPanel>;
     /// Añade un equipo de comunicación al target, en un driver que ya tiene o en uno nuevo.
     fn add_equipment(&self, req: &EquipmentAddRequest) -> VijeoResult<EquipmentAddResult>;
+    /// Renombra un panel base o una ventana emergente. `panel`: ruta de panel_list (`BP:\Carpeta\Panel`), ruta sin
+    /// `BP:\` o nombre si no hay otro igual; en los popups, el nombre (o `Carpeta\Ventana`) de la ventana.
+    fn rename_panel(&self, p: ProjectId, target: &str, kind: PanelKind, panel: &str, new_name: &str) -> VijeoResult<RenamedPanel>;
+    /// Borra un panel base o una ventana emergente. Con referencias a ella (acciones, panel inicial…) se niega
+    /// salvo con `force`, y entonces las devuelve como colgantes.
+    fn delete_panel(&self, p: ProjectId, target: &str, kind: PanelKind, panel: &str, force: bool) -> VijeoResult<DeletedPanel>;
 }
 
 pub trait BuildOps: Send + Sync {

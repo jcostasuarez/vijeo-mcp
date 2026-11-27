@@ -140,12 +140,70 @@ pub fn tie_child(child: &std::process::Child) -> bool {
     tie_to_this_process(HANDLE(child.as_raw_handle()))
 }
 
+/// Lanza un programa para el usuario, **sin** atarlo al MCP: sigue abierto cuando el MCP termina. No hereda ningún
+/// handle (con `std::process::Command` heredaría los pipes de stdio del MCP y el cliente no vería cerrarse su salida
+/// mientras la ventana siguiera abierta: verificado). Pide salir del job en que corra el MCP (si su cliente lo metió
+/// en uno) y, si ese job no lo permite, lo lanza igual. Devuelve el PID.
+pub fn launch_detached(exe: &std::path::Path, args: &[&std::ffi::OsStr]) -> vijeo_core::VijeoResult<u32> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PWSTR;
+    use windows::Win32::System::Threading::{CreateProcessW, CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOW};
+    // Como `std::process::Command`: comillas sólo en lo que lleva espacios (rutas; sin comillas dentro).
+    let mut line: Vec<u16> = Vec::new();
+    for (i, a) in std::iter::once(exe.as_os_str()).chain(args.iter().copied()).enumerate() {
+        if i > 0 {
+            line.push(u16::from(b' '));
+        }
+        let quote = i == 0 || a.encode_wide().any(|c| c == u16::from(b' ') || c == u16::from(b'\t'));
+        if quote {
+            line.push(u16::from(b'"'));
+        }
+        line.extend(a.encode_wide());
+        if quote {
+            line.push(u16::from(b'"'));
+        }
+    }
+    line.push(0);
+    // Sin STARTF_USESTDHANDLES, Windows le copia a un programa de consola los handles estándar del padre aunque no
+    // herede ninguno: se le dan nulos.
+    let si = STARTUPINFOW { cb: std::mem::size_of::<STARTUPINFOW>() as u32, dwFlags: STARTF_USESTDHANDLES, ..Default::default() };
+    let mut last = None;
+    for flags in [CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP] {
+        let mut pi = PROCESS_INFORMATION::default();
+        let mut buf = line.clone();
+        // SAFETY: `buf` (terminado en 0) vive durante la llamada; `si` y `pi` son estructuras válidas.
+        match unsafe { CreateProcessW(PCWSTR::null(), Some(PWSTR(buf.as_mut_ptr())), None, None, false, flags, None, PCWSTR::null(), &si, &mut pi) } {
+            Ok(()) => {
+                // SAFETY: handles que acaba de devolver CreateProcessW y que no se usan más.
+                unsafe {
+                    let _ = CloseHandle(pi.hThread);
+                    let _ = CloseHandle(pi.hProcess);
+                }
+                tracing::info!(pid = pi.dwProcessId, "lanzado para el usuario, sin atar al MCP");
+                return Ok(pi.dwProcessId);
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(vijeo_core::VijeoError::Internal(format!("no se pudo lanzar {}: {}", exe.display(), last.map(|e| e.message()).unwrap_or_default())))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::os::windows::io::AsRawHandle;
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
+
+    /// Lanza un ping de unos segundos sin atarlo: sigue vivo al volver y se puede terminar por su PID. Que no retiene los
+    /// pipes del que lo lanza se comprueba con `cargo test -p vijeo-ui detached | cat`, que tiene que acabar enseguida.
+    #[test]
+    fn detached_launch_survives_and_has_a_pid() {
+        let ping = std::path::Path::new(r"C:\Windows\System32\PING.EXE");
+        let pid = launch_detached(ping, &[std::ffi::OsStr::new("-n"), std::ffi::OsStr::new("8"), std::ffi::OsStr::new("127.0.0.1")]).unwrap();
+        assert!(pid != 0 && is_alive(pid));
+        assert!(launch_detached(std::path::Path::new(r"C:\no\existe.exe"), &[]).is_err());
+    }
 
     #[test]
     fn closing_the_job_kills_its_processes() {

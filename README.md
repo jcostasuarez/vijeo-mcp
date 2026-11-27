@@ -56,6 +56,8 @@ Qué modelos se pueden crear: la regla del catálogo supone la licencia estánda
 | `project_messages` | Contenido actual de la Feedback Zone de un proyecto abierto |
 | `target_config` | Drivers, equipos (IP, puerto, Unit ID, parámetros) y propiedades de descarga de cada target, de un proyecto abierto (su copia de trabajo) o de cualquier `.vdz` sin abrir Vijeo |
 | `target_config_set` | Cambia en un `.vdz`, sin abrir Vijeo, la IP, la máscara y la puerta de enlace de descarga del HMI, y la IP, el puerto y el Unit ID de los equipos (puerto y Unit ID sólo en Modbus TCP). Reescribe `path` o, con `save_as`, escribe otro `.vdz`; `dry_run` sólo calcula los cambios. Rechaza un destino abierto con `project_open` |
+| `vdz_variable_list` | Sin Vijeo y en un instante: variables de un `.vdz` leídas de su base de variables (tipo, origen, dirección, descripción, grupo de escaneo, valor inicial, bytes de las STRING), lo mismo que exporta Vijeo en el XML |
+| `vdz_variable_edit` | Sin Vijeo y en menos de un segundo: crea, cambia y borra variables (internas y externas) y carpetas en un `.vdz`. Se niega a borrar una variable que usan pantallas, acciones o scripts, salvo con `force`. Reescribe `path` o escribe `save_as`; `dry_run` sólo comprueba. Sólo proyectos de un target; alarmas, estructuras y tipos de datos todavía no |
 | `project_export_xml` | Export Project: escribe `<dir>\<proyecto>.vxml` (public.xsd) y la carpeta `<dir>\<proyecto>\` con las imágenes |
 | `variable_list`, `variable_lookup`, `project_cross_references` | Variables (nombre completo, tipo, origen, dirección, descripción), existencia de una variable y referencias cruzadas (dónde se usa cada una y cuáles no se usan), leídas del `.vxml` |
 | `panel_report`, `action_list` | Paneles con sus acciones de panel, y acciones globales (disparador, enclavamiento, script u operaciones), del `.vxml` |
@@ -83,7 +85,7 @@ Las herramientas de objetos trabajan como Copiar y Pegar en el editor del panel,
 - El texto que tuviera el portapapeles se devuelve al terminar; el resto de formatos se pierde.
 - Las piezas de `Image Library` y algunas plantillas antiguas no se pueden insertar.
 
-Cada proyecto abierto es una instancia de Vijeo-Frame que trabaja sobre una copia del `.vdz` en `Vijeo-Manager\MCP_TMP_<pid>_<n>`. El `.vdz` sólo cambia con `project_save` o con `target_config_set` (sin abrir Vijeo), y la copia se borra al cerrar el proyecto. Abrir tarda unos 10-30 s.
+Cada proyecto abierto es una instancia de Vijeo-Frame que trabaja sobre una copia del `.vdz` en `Vijeo-Manager\MCP_TMP_<pid>_<n>`. El `.vdz` sólo cambia con `project_save` o con `target_config_set` y `vdz_variable_edit` (sin abrir Vijeo), y la copia se borra al cerrar el proyecto. Abrir tarda unos 10-30 s.
 
 `project_close` falla si hay cambios hechos por el MCP sin guardar, salvo con `discard=true`. `dirty` sólo refleja esos cambios: lo que el usuario edite a mano en la ventana no se detecta, aunque `project_save` lo guarda.
 
@@ -95,7 +97,7 @@ Las herramientas cuya capacidad no existe en la versión instalada no aparecen e
 
 - Nunca abre ni guarda dentro de `Vijeo-Manager` (proyectos reales), de la carpeta de instalación ni de las carpetas `--protect`. La única excepción son las carpetas `MCP_TMP_<pid>_<n>` que Vijeo crea allí al abrir una copia (`project_open`, `project_new`, `project_build` y `target_build` con `path`). El MCP comprueba que el nombre no exista antes y sólo borra carpetas con ese prefijo.
 - Sólo `.vdz`. No hay herramientas de descarga a HMI.
-- `target_config_set` escribe un `.vdz` sin Vijeo, con la misma validación de ruta que `project_save`. Escribe `<destino>.mcp-tmp` junto al destino, relee el fichero y compara la configuración de todos los targets con la esperada. Sólo si coincide renombra el temporal sobre el destino; si no, lo borra y falla. Rechaza un destino abierto con `project_open`.
+- `target_config_set` y `vdz_variable_edit` escriben un `.vdz` sin Vijeo, con la misma validación de ruta que `project_save`. Escribe `<destino>.mcp-tmp` junto al destino, relee el fichero y compara la configuración de todos los targets (o todas las variables) con la esperada. Sólo si coincide renombra el temporal sobre el destino; si no, lo borra y falla. Rechaza un destino abierto con `project_open`.
 - Los diálogos de Vijeo se responden así: actualizar la versión del proyecto → Sí; modelo no soportado → No (lo convierte a un modelo equivalente); tres o más instancias de Vijeo → Aceptar. Los asistentes y el diálogo de fichero los maneja el MCP. Un aviso desconocido se cierra con Aceptar o Cancelar tras `--dialog-grace` y la operación falla con `modal_dialog`; otro diálogo con botones falla tras 30 s y queda abierto.
 - Si la instancia de un proyecto se cae, sus herramientas devuelven `server_crashed` hasta que se cierra con `project_close`. Los cambios sin guardar se pierden: guarda a menudo.
 - Al salir (stdin cerrado o Ctrl+C) cierra sin guardar todos los proyectos (`Close Project`, responde No) y sus instancias. Si una no sale en 20 s, se termina.

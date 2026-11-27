@@ -50,10 +50,23 @@ pub fn open_swx(path: &Path) -> VijeoResult<Cfb> {
     cfb::CompoundFile::open(Cursor::new(buf)).map_err(|e| VijeoError::io(path, format!("no es un fichero OLE válido: {e}")))
 }
 
-fn stream(c: &mut Cfb, path: &str) -> Option<Vec<u8>> {
+pub fn stream(c: &mut Cfb, path: &str) -> Option<Vec<u8>> {
     let mut buf = Vec::new();
     c.open_stream(path).ok()?.read_to_end(&mut buf).ok()?;
     Some(buf)
+}
+
+/// Reemplaza el contenido de un stream (con la longitud exacta de `bytes`).
+pub fn write_stream(c: &mut Cfb, path: &str, bytes: &[u8]) -> VijeoResult<()> {
+    use std::io::Write;
+    let mut s = c.create_stream(path).map_err(|e| VijeoError::Internal(format!("no se pudo escribir {path}: {e}")))?;
+    s.write_all(bytes).map_err(|e| VijeoError::Internal(format!("no se pudo escribir {path}: {e}")))
+}
+
+/// Todos los streams del fichero: (ruta, contenido).
+pub fn all_streams(c: &mut Cfb) -> Vec<(String, Vec<u8>)> {
+    let paths: Vec<String> = c.walk().filter(|e| e.is_stream()).map(|e| e.path().to_string_lossy().into_owned()).collect();
+    paths.into_iter().filter_map(|p| stream(c, &p).map(|b| (p, b))).collect()
 }
 
 /// Subcarpetas de `path` cuyo nombre es `<prefijo><número>`, ordenadas por número.

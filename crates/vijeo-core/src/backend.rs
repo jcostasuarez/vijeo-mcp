@@ -177,6 +177,11 @@ pub trait ConfigOps: Send + Sync {
         overwrite: bool,
         dry_run: bool,
     ) -> VijeoResult<ConfigEditResult>;
+    /// Variables de un `.vdz` leídas de su base de variables, sin Vijeo (sin las del sistema). Con `elements`, también los
+    /// miembros de las instancias de estructura.
+    fn file_variables(&self, vdz: &Path, elements: bool) -> VijeoResult<Vec<VariableInfo>>;
+    /// Crea, cambia y borra variables y carpetas directamente en un `.vdz`, sin Vijeo.
+    fn edit_file_variables(&self, req: &VariablesEditRequest) -> VijeoResult<VariablesEditResult>;
 }
 
 /// Lecturas del proyecto abierto a partir de su XML (Export Project).

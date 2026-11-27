@@ -140,6 +140,29 @@ pub fn tie_child(child: &std::process::Child) -> bool {
     tie_to_this_process(HANDLE(child.as_raw_handle()))
 }
 
+/// Manda un fichero a la Papelera de reciclaje (`SHFileOperationW` con `FOF_ALLOWUNDO`, sin diálogos): se puede
+/// recuperar desde ahí. Falla si el fichero no queda borrado.
+pub fn recycle(path: &std::path::Path) -> vijeo_core::VijeoResult<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::{SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FO_DELETE, SHFILEOPSTRUCTW};
+    // pFrom: lista de rutas terminada en doble 0.
+    let mut from: Vec<u16> = path.as_os_str().encode_wide().collect();
+    from.extend([0, 0]);
+    let mut op = SHFILEOPSTRUCTW {
+        wFunc: FO_DELETE,
+        pFrom: PCWSTR(from.as_ptr()),
+        fFlags: (FOF_ALLOWUNDO.0 | FOF_NOCONFIRMATION.0 | FOF_NOERRORUI.0 | FOF_SILENT.0) as u16,
+        ..Default::default()
+    };
+    // SAFETY: `from` (doble terminación) vive durante la llamada; el resto de la estructura es válida.
+    let rc = unsafe { SHFileOperationW(&mut op) };
+    if rc != 0 || op.fAnyOperationsAborted.as_bool() || path.exists() {
+        return Err(vijeo_core::VijeoError::io(path, format!("no se pudo mandar a la Papelera (código {rc:#x})")));
+    }
+    Ok(())
+}
+
 /// Lanza un programa para el usuario, **sin** atarlo al MCP: sigue abierto cuando el MCP termina. No hereda ningún
 /// handle (con `std::process::Command` heredaría los pipes de stdio del MCP y el cliente no vería cerrarse su salida
 /// mientras la ventana siguiera abierta: verificado). Pide salir del job en que corra el MCP (si su cliente lo metió

@@ -616,6 +616,20 @@ pub struct VariablesEditResult {
     pub notes: Vec<String>,
 }
 
+/// Resultado de `vdz_copy`, `vdz_rename` y `vdz_delete`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct VdzFileResult {
+    /// El `.vdz` como queda (en `vdz_delete`, el que se mandó a la Papelera).
+    pub path: PathBuf,
+    /// Nombre del proyecto dentro del `.vdz` (el que se ve en Vijeo al abrirlo).
+    pub name: String,
+    /// Ruta anterior (renombrar) u origen (copiar).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
 /// Resultado de Export Project.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct XmlExportResult {

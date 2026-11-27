@@ -51,6 +51,7 @@ Qué modelos se pueden crear: la regla del catálogo supone la licencia estánda
 | `project_open`, `project_info`, `project_close` | Abre un `.vdz` en su propia instancia de Vijeo (trabaja sobre una copia), da su nombre, ruta, `dirty` y targets, y lo cierra |
 | `project_save`, `project_rename` | Guarda la copia de trabajo y empaqueta el `.vdz` en su ruta o en `save_as`. `project_rename` cambia el nombre que se usa al empaquetar |
 | `project_show_in_vijeo` | Abre un `.vdz` (o el de un proyecto abierto) en una ventana de Vijeo para el usuario, como el doble clic. Vijeo lo importa a su lista de proyectos, donde los `.vdz` del MCP no aparecen hasta abrirlos. Se niega si Vijeo ya tiene un proyecto con ese nombre |
+| `vdz_copy`, `vdz_rename`, `vdz_delete` | Sin Vijeo: copian un `.vdz` (con otro nombre de proyecto, por defecto el del fichero nuevo), lo renombran (fichero y/o nombre de proyecto) o lo mandan a la Papelera. Nunca en Vijeo-Manager ni sobre proyectos abiertos en el MCP |
 | `target_list`, `target_add`, `target_rename`, `target_delete`, `panel_list` | Targets (añadir con el asistente New Target; renombrar y borrar en el Navigator) y paneles base (`BP:\...`) |
 | `project_build`, `target_build` | Build All: nº de errores y warnings y el texto de cada uno, de la Feedback Zone. Con `project` compila el estado actual del proyecto abierto; con `path` compila una copia de un `.vdz` sin tocarlo (~25 s con un proyecto real) |
 | `project_messages` | Contenido actual de la Feedback Zone de un proyecto abierto |

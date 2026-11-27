@@ -843,6 +843,47 @@ mod live {
         b.shutdown().unwrap();
     }
 
+    /// vdz_copy, vdz_rename y vdz_delete sin Vijeo sobre el ejemplo Modbus; luego Vijeo abre la copia renombrada con su
+    /// nombre nuevo y la compila con los errores del original. El borrado manda un .vdz de prueba propio a la Papelera.
+    #[test]
+    fn live_vdz_files() {
+        let Some(src) = modbus() else { return };
+        let b = backend();
+        let errs = |m: &[vijeo_core::BuildMessage]| {
+            let mut v: Vec<_> = m.iter().filter(|m| m.severity == vijeo_core::MessageSeverity::Error).map(|m| m.code).collect();
+            v.sort();
+            v
+        };
+        let base = b.build().unwrap().build_file(&src, None).unwrap();
+        let dir = work_dir("vdz_files");
+        let files = b.files().unwrap();
+        let (a, c) = (dir.join("McpCopia.vdz"), dir.join("McpRenombrado.vdz"));
+        let _ = std::fs::remove_file(&c);
+        let r = files.copy_vdz(&src, &a, None, true).unwrap();
+        eprintln!("{r:?}");
+        assert_eq!(r.name, "McpCopia");
+        let r = files.rename_vdz(&a, Some(&c), Some("McpProyecto2"), false).unwrap();
+        eprintln!("{r:?}");
+        assert!(r.name == "McpProyecto2" && !a.exists() && c.exists());
+        let info = b.projects().unwrap().open(&c).unwrap();
+        eprintln!("abierto: {} {:?}", info.name, info.path);
+        assert_eq!(info.name, "McpProyecto2");
+        b.projects().unwrap().close(info.id, false).unwrap();
+        let built = b.build().unwrap().build_file(&c, None).unwrap();
+        assert_eq!(errs(&built.messages), errs(&base.messages));
+        // Abierto en el MCP: ni renombrar ni borrar.
+        let info = b.projects().unwrap().open(&c).unwrap();
+        assert_eq!(files.delete_vdz(&c).unwrap_err().code(), "refused");
+        assert_eq!(files.rename_vdz(&c, None, Some("Otro"), false).unwrap_err().code(), "refused");
+        b.projects().unwrap().close(info.id, false).unwrap();
+        let gone = dir.join("McpBorrar.vdz");
+        files.copy_vdz(&src, &gone, None, true).unwrap();
+        let r = files.delete_vdz(&gone).unwrap();
+        eprintln!("{r:?}");
+        assert!(!gone.exists());
+        b.shutdown().unwrap();
+    }
+
     /// vdz_variable_edit sobre una copia del ejemplo Modbus, sin Vijeo: carpetas y variables nuevas (internas y externas
     /// de varios tipos), cambios (dirección, descripción, bytes) y un borrado. Luego Vijeo: la copia compila con los
     /// errores del original; abierta, su XML tiene las variables como se escribieron; y lo que guarda Vijeo se relee

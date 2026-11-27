@@ -45,6 +45,7 @@ windows = { version = "0.62.2", features = [
     "Win32_Storage_FileSystem",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
 ] }
 roxmltree = "0.20"
 cfb = "0.10"

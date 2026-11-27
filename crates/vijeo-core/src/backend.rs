@@ -208,6 +208,12 @@ pub trait FileOps: Send + Sync {
     fn variables_csv(&self, req: &VariableCsvRequest) -> VijeoResult<VariableCsvResult>;
     /// Convierte recetas o registros de datos con `DataConverter.exe`.
     fn convert_data(&self, req: &DataConvertRequest) -> VijeoResult<DataConvertResult>;
+    /// Copia un `.vdz` en `dest` (con `name`, otro nombre de proyecto; por defecto el nombre del fichero).
+    fn copy_vdz(&self, src: &Path, dest: &Path, name: Option<&str>, overwrite: bool) -> VijeoResult<VdzFileResult>;
+    /// Renombra un `.vdz` (`dest`) y/o su nombre de proyecto (`name`).
+    fn rename_vdz(&self, src: &Path, dest: Option<&Path>, name: Option<&str>, overwrite: bool) -> VijeoResult<VdzFileResult>;
+    /// Manda un `.vdz` a la Papelera.
+    fn delete_vdz(&self, path: &Path) -> VijeoResult<VdzFileResult>;
 }
 
 /// Objetos de los paneles base de un proyecto abierto (por el portapapeles de Vijeo) y piezas de la Toolchest.

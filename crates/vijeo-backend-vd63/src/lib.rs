@@ -10,6 +10,7 @@ mod panel_ops;
 pub mod lint;
 pub mod probe;
 pub mod reports;
+pub mod script;
 pub mod toolchest;
 pub mod widgets;
 pub mod swx;

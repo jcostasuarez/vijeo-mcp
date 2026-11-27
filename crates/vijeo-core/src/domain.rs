@@ -914,6 +914,22 @@ pub enum SwitchAction {
     ChangePanel { panel: String },
     /// Vuelve al panel anterior.
     PreviousPanel,
+    /// Abre la ventana emergente `popup` (su nombre o su ruta en Popup Windows). Con `x` e `y` (las dos), en esa
+    /// posición en píxeles; sin ellas, centrada.
+    OpenPopup {
+        popup: String,
+        #[serde(default)]
+        x: Option<i32>,
+        #[serde(default)]
+        y: Option<i32>,
+    },
+    /// Cierra la ventana emergente `popup` (su nombre o su ruta en Popup Windows).
+    ClosePopup { popup: String },
+    /// Ejecuta un script de acción en Java con la API de scripts de Vijeo: variables (`Carpeta.Var.getIntValue()`,
+    /// `.getFloatValue()`, `.getStringValue()`, `.write(…)`, `.X(n)`…), `Sys.…` (`setTime`, `beep`, `logout`…), `Math`,
+    /// variables locales, `if`, `for`… Se compila con el compilador de Vijeo al aplicarlo: un error se devuelve con su
+    /// línea y columna y no se cambia nada. Otros objetos (sonido, recetas, alarmas, ventanas…) no se admiten todavía.
+    Script { script: String },
 }
 
 /// Fuente de un texto o una etiqueta: las fuentes de mapa de bits de Vijeo (GP).

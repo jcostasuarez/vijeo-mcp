@@ -75,6 +75,35 @@ pub fn variables(t: Node) -> Vec<VariableInfo> {
     out
 }
 
+/// Variables del target con su tipo para el compilador de scripts (`crate::script`): las simples (`BOOL`, `INTEGER`,
+/// `REAL`, `STRING`), las instancias de estructura (`BaseTag`) y sus miembros con el tipo de `<DataTypes>`. Las de otros
+/// tipos no se dan: un script que las use no compila.
+pub fn script_symbols(t: Node) -> Vec<(String, String)> {
+    let mut structs: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    let root = t.ancestors().find(|a| a.has_tag_name("Project"));
+    if let Some(dt) = root.and_then(|r| child(r, "DataTypes")) {
+        for s in elements(dt).filter(|s| s.has_tag_name("StructureType")) {
+            let members = elements(s)
+                .filter(|e| e.has_tag_name("StructureElement"))
+                .filter_map(|e| Some((attr(e, "Name")?, attr(e, "Type").unwrap_or_default())))
+                .collect();
+            if let Some(n) = attr(s, "Name") {
+                structs.insert(n, members);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for v in variables(t) {
+        if let Some(ms) = structs.get(&v.data_type) {
+            out.push((v.name.clone(), "BaseTag".to_owned()));
+            out.extend(ms.iter().filter_map(|(m, ty)| Some((format!("{}.{m}", v.name), crate::script::symbol_type(ty)?.to_owned()))));
+        } else if let Some(ty) = crate::script::symbol_type(&v.data_type) {
+            out.push((v.name, ty.to_owned()));
+        }
+    }
+    out
+}
+
 /// Nombres que se pueden usar como variable en un objeto: las variables del target y los miembros de las
 /// estructuradas (`Var.miembro`), tanto los que van dentro de la variable como los de su tipo en `<DataTypes>`.
 pub fn variable_names(t: Node) -> Vec<String> {
@@ -260,17 +289,29 @@ pub struct PanelId {
     pub name: String,
     /// `P2`, `P10001`…
     pub id: String,
+    /// Ventanas emergentes: nombre de la ventana (`<Window Name=…>`) que contiene el panel; vacío en el resto.
+    pub window: String,
 }
 
-/// Paneles base, maestros y ventanas emergentes con su id.
+/// Paneles base, maestros y ventanas emergentes con su id. Una ventana emergente (`<Window WindowID="W1">`) no
+/// tiene id de panel: lo tienen sus paneles (`<Panels><Panel ID="P10001">`), que son los que abren y cierran las acciones;
+/// su ruta es `Carpeta\Ventana\Panel`.
 pub fn panel_ids(t: Node) -> Vec<PanelId> {
     let mut out = Vec::new();
     let Some(gp) = child(t, "GraphicalPanels") else { return out };
     for (holder, tag, group, _) in PANEL_GROUPS {
         if let Some(h) = child(gp, holder) {
             collect_panels(h, tag, "", &mut |path, p| {
+                let name = attr(p, "Name").unwrap_or_default();
                 if let Some(id) = attr(p, "ID") {
-                    out.push(PanelId { group: group.to_owned(), path: path.to_owned(), name: attr(p, "Name").unwrap_or_default(), id });
+                    out.push(PanelId { group: group.to_owned(), path: path.to_owned(), name, id, window: String::new() });
+                } else if tag == "Window" {
+                    // <Window><Panels><Panel ID="P10001">…
+                    for c in child(p, "Panels").into_iter().flat_map(elements).filter(|c| c.has_tag_name("Panel")) {
+                        if let (Some(id), Some(pn)) = (attr(c, "ID"), attr(c, "Name")) {
+                            out.push(PanelId { group: group.to_owned(), path: format!("{path}\\{pn}"), name: pn, id, window: name.clone() });
+                        }
+                    }
                 }
             });
         }
@@ -427,7 +468,7 @@ mod tests {
         <Folder Name="Sub"><Panel Name="Two" ID="P2"/></Folder>
       </BasePanels>
       <MasterPanels><MasterPanel Name="Std" ID="P1000001"/></MasterPanels>
-      <PopupWindows><Window Name="Pop"/></PopupWindows>
+      <PopupWindows><Window Name="Pop" WindowID="W1"><Panels><Panel Name="Panel1" ID="P10001"/></Panels></Window></PopupWindows>
     </GraphicalPanels>
     <Variables>
       <Folder Name="Ctl">
@@ -474,6 +515,18 @@ mod tests {
         );
         assert_eq!(p[0].actions[0].trigger, "Event - OnOpen");
         assert_eq!(base_panel_refs(t).len(), 2);
+        // Las ventanas emergentes no tienen id: lo tienen sus paneles (<Window><Panels><Panel ID>).
+        let all = panel_ids(t);
+        let ids: Vec<(&str, &str, &str, &str)> = all.iter().map(|p| (p.group.as_str(), p.path.as_str(), p.id.as_str(), p.window.as_str())).collect();
+        assert_eq!(
+            ids,
+            [
+                ("Base Panels", "Start", "P1", ""),
+                ("Base Panels", "Sub\\Two", "P2", ""),
+                ("Master Panels", "Std", "P1000001", ""),
+                ("Popup Windows", "Pop\\Panel1", "P10001", "Pop")
+            ]
+        );
     }
 
     #[test]

@@ -78,7 +78,9 @@ acciones, variables, alarmas…) con sus imágenes. No hay herramienta para impo
 lista los objetos (ruta Grupo/Objeto, tipo, posición absoluta, textos y variables; de los smart objects, sus \
 propiedades); panel_edit renombra, mueve, redimensiona, cambia textos, sustituye variables (Vijeo las vuelve a \
 enlazar por nombre), borra objetos y cambia animaciones, acciones de botones, colores y propiedades de smart objects \
-(dry_run para probar); panel_insert crea objetos desde cero (`create`: botones con acciones, lámparas, displays \
+(dry_run para probar); panel_insert crea objetos desde cero (`create`: botones con acciones —bits, palabras, \
+scripts (compilados con el compilador de Vijeo: un error vuelve con su línea y columna), \
+cambiar de panel, abrir y cerrar ventanas emergentes—, lámparas, displays \
 numéricos y de texto, textos, rectángulos, elipses y líneas, con animaciones de visibilidad, parpadeo, color, relleno \
 y posición) o añade piezas de la Toolchest (toolchest_list, sin Vijeo; los smart objects —fecha, hora…— con sus \
 `properties`) u objetos copiados de otro panel. Las variables tienen que existir en el target (se comprueban en el \

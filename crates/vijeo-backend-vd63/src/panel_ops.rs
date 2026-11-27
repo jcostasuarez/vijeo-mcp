@@ -481,7 +481,7 @@ pub fn differences(want: &[Node], got: &[Node]) -> Vec<String> {
 mod tests {
     use super::*;
 
-    fn no_panels(p: &str) -> Result<String, String> {
+    fn no_panels(_: crate::widgets::build::RefKind, p: &str) -> Result<String, String> {
         Err(format!("no hay panel {p}"))
     }
 

@@ -843,6 +843,84 @@ mod live {
         b.shutdown().unwrap();
     }
 
+    /// vdz_variable_edit sobre una copia del ejemplo Modbus, sin Vijeo: carpetas y variables nuevas (internas y externas
+    /// de varios tipos), cambios (dirección, descripción, bytes) y un borrado. Luego Vijeo: la copia compila con los
+    /// errores del original; abierta, su XML tiene las variables como se escribieron; y lo que guarda Vijeo se relee
+    /// igual sin Vijeo.
+    #[test]
+    fn live_offline_variables() {
+        use vijeo_core::{VariableInfo, VariablesEditRequest};
+        let Some(src) = modbus() else { return };
+        let b = backend();
+        let errs = |m: &[vijeo_core::BuildMessage]| {
+            let mut v: Vec<_> = m.iter().filter(|m| m.severity == vijeo_core::MessageSeverity::Error).map(|m| m.code).collect();
+            v.sort();
+            v
+        };
+        let base = b.build().unwrap().build_file(&src, None).unwrap();
+        let dir = work_dir("offline_variables");
+        let vdz = dir.join("McpVariables.vdz");
+        let cfg = b.config().unwrap();
+        let req: VariablesEditRequest = serde_json::from_value(serde_json::json!({
+            "path": src, "save_as": vdz, "overwrite": true,
+            "edits": [
+                {"op": "add_folder", "path": "Mcp.Sub"},
+                {"op": "add", "name": "Mcp.Contador", "data_type": "INT", "initial_value": -5, "description": "de prueba"},
+                {"op": "add", "name": "Mcp.Sub.Marcha", "data_type": "BOOL", "source": "External", "address": "%M300"},
+                {"op": "add", "name": "Mcp.Nivel", "data_type": "REAL", "initial_value": 1.5},
+                {"op": "add", "name": "Mcp.Texto", "data_type": "STRING", "initial_value": "hola", "string_bytes": 16},
+                {"op": "add", "name": "McpRaiz", "data_type": "DINT"},
+                {"op": "add", "name": "Mcp.Largo", "data_type": "UDINT", "source": "External", "address": "%MD500"},
+                {"op": "add", "name": "MyController.Energy.iNueva", "data_type": "UINT", "source": "External", "address": "%MW400"},
+                {"op": "set", "name": "MyController.Energy.iTimeSec", "address": "%MW99", "description": "segundos"},
+                {"op": "set", "name": "sRefStringForComErrCodes", "string_bytes": 30},
+                {"op": "add", "name": "Mcp.Borrable", "data_type": "DINT"},
+                {"op": "delete", "name": "Mcp.Borrable"}
+            ]
+        }))
+        .unwrap();
+        let t = std::time::Instant::now();
+        let r = cfg.edit_file_variables(&req).unwrap();
+        eprintln!("{:?} en {:?}\n{:#?}", r.changes, t.elapsed(), r.variables);
+        assert!(r.written && r.variables.len() == 9, "{r:?}");
+        // Borrar algo que usan las pantallas se niega sin force.
+        let used: VariablesEditRequest =
+            serde_json::from_value(serde_json::json!({"path": vdz, "dry_run": true, "edits": [{"op": "delete", "name": "MyController.Energy.reTotalEnergy"}]})).unwrap();
+        let e = cfg.edit_file_variables(&used).unwrap_err();
+        eprintln!("{e}");
+        assert!(e.code() == "invalid_argument" && e.to_string().contains("Panel"), "{e}");
+
+        let built = b.build().unwrap().build_file(&vdz, None).unwrap();
+        eprintln!("original: {:?}\ncopia: {:?}", base.messages, built.messages);
+        assert_eq!(errs(&built.messages), errs(&base.messages));
+
+        let offline = cfg.file_variables(&vdz, true).unwrap();
+        let info = b.projects().unwrap().open(&vdz).unwrap();
+        let xml = b.reports().unwrap().variables(info.id, None).unwrap();
+        let by = |all: &[VariableInfo], n: &str| all.iter().find(|v| v.name == n).cloned();
+        for n in ["Mcp.Contador", "Mcp.Sub.Marcha", "Mcp.Nivel", "Mcp.Texto", "McpRaiz", "Mcp.Largo", "MyController.Energy.iNueva", "MyController.Energy.iTimeSec", "sRefStringForComErrCodes"] {
+            let (x, o) = (by(&xml, n), by(&offline, n));
+            eprintln!("{n}\n  XML:     {x:?}\n  offline: {o:?}");
+            let (x, o) = (x.unwrap_or_else(|| panic!("{n} no está en el XML")), o.unwrap());
+            assert_eq!((&x.data_type, &x.source, &x.address), (&o.data_type, &o.source, &o.address), "{n}");
+            assert_eq!(x.description.as_deref().map(str::trim), o.description.as_deref().map(str::trim), "{n}");
+            for k in ["ScanGroup", "InitialValue", "NoOfBytes"] {
+                assert_eq!(x.extra.get(k), o.extra.get(k), "{n} {k}");
+            }
+        }
+        assert!(by(&xml, "Mcp.Borrable").is_none() && by(&xml, "xRTCSyncDone").is_some());
+        assert_eq!(xml.len(), cfg.file_variables(&vdz, false).unwrap().len());
+
+        // Lo que guarda Vijeo se relee igual sin Vijeo.
+        let resaved = dir.join("McpVariablesVijeo.vdz");
+        b.projects().unwrap().save(info.id, Some(&resaved), true).unwrap();
+        b.projects().unwrap().close(info.id, false).unwrap();
+        let again = cfg.file_variables(&resaved, true).unwrap();
+        let json = |v: &[VariableInfo]| serde_json::to_value(v).unwrap();
+        assert_eq!(json(&again), json(&offline));
+        b.shutdown().unwrap();
+    }
+
     /// project_new/project_save dicen dónde quedó el .vdz, y project_show_in_vijeo se niega (sin lanzar Vijeo) con un
     /// proyecto que se llama como uno de la lista de Vijeo («Samples», que trae la instalación en Vijeo-Manager).
     #[test]

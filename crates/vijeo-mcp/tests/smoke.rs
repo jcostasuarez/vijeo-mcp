@@ -116,6 +116,33 @@ fn smoke_list_and_catalog() {
     assert!(!err, "{modbus}");
     assert!(modbus["drivers"].as_array().unwrap().iter().any(|d| d["id"] == "Schneider_Modbus_TCP"), "{modbus}");
 
+    // Variables sin Vijeo (vdz_variable_list / vdz_variable_edit).
+    assert!(names.contains(&"vdz_variable_list") && names.contains(&"vdz_variable_edit"));
+    let (err, msg) = c.call("vdz_variable_edit", json!({"path": r"C:\no-existe-mcp\x.vdz", "edits": [{"op": "add_folder", "path": "A"}]}));
+    assert!(err && msg.as_str().unwrap().contains("[invalid_argument]"), "{msg}");
+    let modbus = r"C:\Program Files (x86)\Schneider Electric\EcoStruxure Machine Expert - Basic\Examples\Compact_Modbus SL_M221_Book.vdz";
+    if std::path::Path::new(modbus).is_file() {
+        let (err, vars) = c.call("vdz_variable_list", json!({"path": modbus}));
+        assert!(!err, "{vars}");
+        assert_eq!(vars["count"], 183);
+        let (err, ext) = c.call("vdz_variable_list", json!({"path": modbus, "text": "reTotalEnergy"}));
+        assert!(!err && ext["variables"][0]["address"] == "%MF16", "{ext}");
+        let out = std::env::temp_dir().join("vijeo-mcp-smoke-vars.vdz");
+        let (err, r) = c.call(
+            "vdz_variable_edit",
+            json!({"path": modbus, "save_as": out, "overwrite": true, "dry_run": true, "edits": [
+                {"op": "add", "name": "Smoke.Nivel", "data_type": "REAL", "initial_value": 2.5},
+                {"op": "set", "name": "MyController.Energy.iTimeSec", "description": "s"}
+            ]}),
+        );
+        assert!(!err && r["written"] == false && r["variables"].as_array().unwrap().len() == 2, "{r}");
+        assert!(!out.exists(), "dry_run no escribe");
+        for edits in [json!([]), json!([{"op": "add", "name": "Mal Nombre", "data_type": "INT"}]), json!([{"op": "add", "name": "X", "data_type": "WORD"}]), json!([{"op": "delete", "name": "MyController.Energy.reTotalEnergy"}])] {
+            let (err, msg) = c.call("vdz_variable_edit", json!({"path": modbus, "save_as": out, "dry_run": true, "edits": edits}));
+            assert!(err && msg.as_str().unwrap().contains("[invalid_argument]"), "{msg}");
+        }
+    }
+
     // project_show_in_vijeo: los errores se detectan antes de lanzar Vijeo (ninguno de estos lo lanza).
     assert!(names.contains(&"project_show_in_vijeo"));
     for args in [json!({}), json!({"path": r"C:\no\existe.vdz", "project": 1}), json!({"path": r"C:\no-existe-mcp\x.vdz"}), json!({"path": r"C:\x.txt"})] {

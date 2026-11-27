@@ -517,6 +517,105 @@ pub struct ConfigEditResult {
     pub notes: Vec<String>,
 }
 
+/// Texto que en el JSON puede venir como cadena o como número (`"initial_value": 5`).
+fn string_or_number<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(s)) => Some(s),
+        Some(serde_json::Value::Bool(b)) => Some(if b { "1" } else { "0" }.to_owned()),
+        Some(v) => Some(v.to_string()),
+    })
+}
+
+/// Ajustes de una variable en `vdz_variable_edit`. Lo que falta no se toca; un texto vacío lo quita.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct VariableSettings {
+    /// `Internal` o `External`.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Grupo de escaneo (variables External; si el proyecto tiene uno solo, ése).
+    #[serde(default)]
+    pub scan_group: Option<String>,
+    /// Dirección del equipo (`%MW10`, `%M3`…; variables External y elementos de estructura).
+    #[serde(default)]
+    pub address: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Valor inicial (variables Internal): número, `0`/`1` en BOOL, texto en STRING.
+    #[serde(default, deserialize_with = "string_or_number")]
+    #[schemars(with = "Option<String>")]
+    pub initial_value: Option<String>,
+    /// Grupo de registro (data logging).
+    #[serde(default)]
+    pub logging_group: Option<String>,
+    /// Bytes de una STRING (por defecto 20 al crearla).
+    #[serde(default)]
+    pub string_bytes: Option<u32>,
+}
+
+/// Una operación de `vdz_variable_edit`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum VariableEdit {
+    /// Crea una variable `Carpeta.Nombre` (las carpetas que falten se crean). Tipos: BOOL, INT, UINT, DINT, UDINT,
+    /// Integer, REAL, STRING.
+    Add {
+        name: String,
+        data_type: String,
+        #[serde(flatten)]
+        settings: VariableSettings,
+    },
+    /// Cambia los ajustes de una variable o de un elemento de estructura (`Instancia.Miembro`: address, description,
+    /// initial_value).
+    Set {
+        name: String,
+        #[serde(flatten)]
+        settings: VariableSettings,
+    },
+    /// Borra una variable (una instancia de estructura, con sus elementos). Se niega si pantallas, scripts u otras
+    /// partes del proyecto la nombran, salvo con `force`.
+    Delete {
+        name: String,
+        #[serde(default)]
+        force: bool,
+    },
+    /// Crea una carpeta (`A.B`, con las que falten).
+    AddFolder { path: String },
+    /// Borra una carpeta vacía.
+    DeleteFolder { path: String },
+}
+
+/// Petición de `vdz_variable_edit`: variables y carpetas cambiadas directamente en un `.vdz`, sin Vijeo.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct VariablesEditRequest {
+    /// `.vdz` de origen.
+    pub path: PathBuf,
+    /// Dónde escribir el resultado (por defecto, sobre `path`).
+    #[serde(default)]
+    pub save_as: Option<PathBuf>,
+    /// Reemplazar `save_as` si ya existe.
+    #[serde(default)]
+    pub overwrite: bool,
+    /// Sólo comprobar y decir qué cambiaría.
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Se aplican en orden; si una falla no se escribe nada.
+    pub edits: Vec<VariableEdit>,
+}
+
+/// Resultado de `vdz_variable_edit`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct VariablesEditResult {
+    pub path: PathBuf,
+    pub written: bool,
+    /// Qué se hizo, una línea por operación.
+    pub changes: Vec<String>,
+    /// Las variables creadas o cambiadas como quedan (releídas del fichero escrito).
+    pub variables: Vec<VariableInfo>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
 /// Resultado de Export Project.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct XmlExportResult {

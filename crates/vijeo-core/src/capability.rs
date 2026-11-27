@@ -29,6 +29,8 @@ pub enum Capability {
     ProjectConfig,
     /// IP de descarga del target y dirección de sus equipos escritas en el `.vdz`.
     ConfigEdit,
+    /// Variables y carpetas leídas y cambiadas directamente en el `.vdz`, sin Vijeo.
+    OfflineVariables,
     /// Validar un `.vxml` contra el `public.xsd` de la instalación, sin Vijeo.
     XmlValidate,
     /// Revisar los scripts del proyecto (o un texto suelto) contra sus variables y la API de scripts.
@@ -54,7 +56,7 @@ pub enum Capability {
 }
 
 impl Capability {
-    pub const ALL: [Capability; 22] = [
+    pub const ALL: [Capability; 23] = [
         Capability::ProjectLifecycle,
         Capability::TargetManage,
         Capability::Build,
@@ -66,6 +68,7 @@ impl Capability {
         Capability::DriverCatalog,
         Capability::ProjectConfig,
         Capability::ConfigEdit,
+        Capability::OfflineVariables,
         Capability::XmlValidate,
         Capability::ScriptLint,
         Capability::VariableCsv,
@@ -92,6 +95,7 @@ impl Capability {
             Capability::DriverCatalog => "driver_catalog",
             Capability::ProjectConfig => "project_config",
             Capability::ConfigEdit => "config_edit",
+            Capability::OfflineVariables => "offline_variables",
             Capability::XmlValidate => "xml_validate",
             Capability::ScriptLint => "script_lint",
             Capability::VariableCsv => "variable_csv",

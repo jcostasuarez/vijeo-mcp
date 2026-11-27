@@ -17,7 +17,7 @@ use vijeo_ui::process;
 
 use crate::catalog::{split_hmi_type, Catalog};
 use crate::ui_project::{self, NewEquipment, NewTarget, Timeouts, UiProject};
-use crate::{dataconv, drivers, feedback, lint, objects, panel_ops, probe, reports, script, swx, toolchest, validate, varcsv, vdz, vxml, xsd};
+use crate::{dataconv, drivers, feedback, lint, objects, panel_ops, probe, reports, script, swx, tagdb, toolchest, validate, varcsv, vdz, vxml, xsd};
 use crate::widgets::build::{self, RefKind};
 
 /// Esquema público del XML de proyecto, relativo a `Vijeo-Frame`.
@@ -217,6 +217,7 @@ impl Vd63Backend {
             Capability::PanelList,
             // El formato de lo que se escribe sólo está verificado con 6.3.
             Capability::ConfigEdit,
+            Capability::OfflineVariables,
             Capability::VariableCsv,
             Capability::ScriptLint,
             Capability::PanelOpen,
@@ -1866,6 +1867,158 @@ impl ConfigOps for Vd63Backend {
         }
         notes.push("compílalo con project_build (path) para comprobar que Vijeo lo acepta".into());
         Ok(ConfigEditResult { path: dest, written: true, changes: edit.changes, target: with_hmi_type(edit.expected), notes })
+    }
+
+    fn file_variables(&self, vdz: &Path, elements: bool) -> VijeoResult<Vec<VariableInfo>> {
+        self.require(Capability::OfflineVariables)?;
+        check_vdz_input("path", vdz)?;
+        let mut cfb = swx::open_vdz(vdz)?;
+        let (db, target) = read_tagdb(&mut cfb)?;
+        Ok(db.variables(&target, elements))
+    }
+
+    fn edit_file_variables(&self, req: &VariablesEditRequest) -> VijeoResult<VariablesEditResult> {
+        self.require(Capability::OfflineVariables)?;
+        let vdz = req.path.as_path();
+        check_vdz_input("path", vdz)?;
+        if req.edits.is_empty() {
+            return Err(VijeoError::invalid("edits", "no hay nada que cambiar"));
+        }
+        let dest = match &req.save_as {
+            Some(s) => {
+                let d = validate::vdz_path("save_as", s, &self.protected)?;
+                if d.exists() && !same_path(&d, vdz) && !req.overwrite {
+                    return Err(VijeoError::invalid("save_as", format!("{} ya existe (usa overwrite=true para reemplazarlo)", d.display())));
+                }
+                d
+            }
+            None => validate::vdz_path("path", vdz, &self.protected)?,
+        };
+        if !dest.parent().is_some_and(Path::is_dir) {
+            return Err(VijeoError::invalid("save_as", format!("la carpeta de {} no existe", dest.display())));
+        }
+        let mut notes = Vec::new();
+        for i in self.pool.lock().unwrap().map.values() {
+            let Some(p) = i.path() else { continue };
+            if same_path(&p, &dest) {
+                return Err(VijeoError::Refused(format!(
+                    "{} está abierto como proyecto {}: guárdalo si hace falta, ciérralo con project_close y vuelve a abrirlo después",
+                    dest.display(),
+                    i.id
+                )));
+            }
+            if same_path(&p, vdz) && i.unsaved.load(Ordering::SeqCst) {
+                notes.push(format!("el proyecto {} (abierto sobre este .vdz) tiene cambios sin guardar que no están en el resultado", i.id));
+            }
+        }
+
+        let mut cfb = swx::open_vdz(vdz)?;
+        let (mut db, target) = read_tagdb(&mut cfb)?;
+        let streams = if req.edits.iter().any(|e| matches!(e, VariableEdit::Delete { force: false, .. })) { swx::all_streams(&mut cfb) } else { Vec::new() };
+        let mut changes = Vec::new();
+        let mut touched: Vec<String> = Vec::new();
+        let names = |n: &str| -> VijeoResult<()> {
+            for seg in n.trim().split('.') {
+                validate::identifier("name", seg)?;
+            }
+            Ok(())
+        };
+        for (i, e) in req.edits.iter().enumerate() {
+            let field = format!("edits[{i}]");
+            let fail = |m: String| VijeoError::invalid(&field, m);
+            match e {
+                VariableEdit::Add { name, data_type, settings } => {
+                    names(name)?;
+                    db.add_variable(name, data_type, &settings_of(settings)).map_err(fail)?;
+                    changes.push(format!("creada {} ({data_type})", name.trim()));
+                    touched.push(name.trim().to_owned());
+                }
+                VariableEdit::Set { name, settings } => {
+                    db.set_variable(name, &settings_of(settings)).map_err(fail)?;
+                    changes.push(format!("cambiada {}", name.trim()));
+                    touched.push(name.trim().to_owned());
+                }
+                VariableEdit::Delete { name, force } => {
+                    let v = db.find_var(name).cloned().ok_or_else(|| fail(format!("no hay ninguna variable «{}»", name.trim())))?;
+                    if !force {
+                        let used = tagdb::usages(&streams, &v.name, v.id);
+                        if !used.is_empty() {
+                            return Err(fail(format!(
+                                "«{}» se nombra en {} parte(s) del proyecto ({}): cámbialas antes, o borra con force: true (Vijeo dará error en lo que la use)",
+                                v.name,
+                                used.len(),
+                                used.join("; ")
+                            )));
+                        }
+                    }
+                    db.delete_variable(&v.name).map_err(fail)?;
+                    changes.push(format!("borrada {}", v.name));
+                }
+                VariableEdit::AddFolder { path } => {
+                    names(path)?;
+                    let created = db.add_folder(path).map_err(fail)?;
+                    changes.push(if created { format!("creada la carpeta {}", path.trim()) } else { format!("la carpeta {} ya existía", path.trim()) });
+                }
+                VariableEdit::DeleteFolder { path } => {
+                    db.delete_folder(path).map_err(fail)?;
+                    changes.push(format!("borrada la carpeta {}", path.trim()));
+                }
+            }
+        }
+        let expected = db.variables(&target, true);
+        let pick = |all: &[VariableInfo]| -> Vec<VariableInfo> { all.iter().filter(|v| touched.iter().any(|t| t.eq_ignore_ascii_case(&v.name))).cloned().collect() };
+        if req.dry_run {
+            notes.push("dry_run: no se escribió nada".into());
+            return Ok(VariablesEditResult { path: dest, written: false, changes, variables: pick(&expected), notes });
+        }
+        let (tagdb_bytes, ns_bytes) = db.into_streams();
+        swx::write_stream(&mut cfb, "/Services/TagDatabase", &tagdb_bytes)?;
+        swx::write_stream(&mut cfb, "/Services/NameServer", &ns_bytes)?;
+        // Se escribe al lado del destino y sólo se reemplaza si al releerlo las variables son las esperadas.
+        let tmp = dest.with_file_name(format!("{}.mcp-tmp", dest.file_name().unwrap_or_default().to_string_lossy()));
+        let written = (|| {
+            vdz::replace_swx(vdz, &tmp, &swx::into_bytes(cfb)?)?;
+            let (again, _) = read_tagdb(&mut swx::open_vdz(&tmp)?)?;
+            let json = |v: &[VariableInfo]| serde_json::to_value(v).unwrap_or_default();
+            if json(&again.variables(&target, true)) != json(&expected) {
+                return Err(VijeoError::Internal("al releer el fichero escrito las variables no son las esperadas: no se reemplazó el destino".into()));
+            }
+            std::fs::rename(&tmp, &dest).map_err(|e| VijeoError::io(&dest, e))?;
+            Ok(again)
+        })();
+        let again = match written {
+            Ok(a) => a,
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e);
+            }
+        };
+        notes.push("compílalo con project_build (path) para comprobar que Vijeo lo acepta; project_show_in_vijeo lo abre en Vijeo".into());
+        Ok(VariablesEditResult { path: dest, written: true, changes, variables: pick(&again.variables(&target, true)), notes })
+    }
+}
+
+/// Base de variables del `.vdz` y nombre de su target. Los proyectos con varios targets todavía no: la base es una
+/// sola para todo el proyecto y no se sabe aún a qué target va cada variable.
+fn read_tagdb(cfb: &mut cfb::CompoundFile<std::io::Cursor<Vec<u8>>>) -> VijeoResult<(tagdb::TagDb, String)> {
+    let targets = swx::target_names(cfb).unwrap_or_default();
+    if targets.len() > 1 {
+        return Err(VijeoError::Refused(format!("proyectos con varios targets ({}): las variables sin Vijeo todavía no", targets.join(", "))));
+    }
+    let tag = swx::stream(cfb, "/Services/TagDatabase").ok_or_else(|| VijeoError::Internal("el .vdz no tiene Services/TagDatabase".into()))?;
+    let ns = swx::stream(cfb, "/Services/NameServer").ok_or_else(|| VijeoError::Internal("el .vdz no tiene Services/NameServer".into()))?;
+    Ok((tagdb::TagDb::parse(tag, ns)?, targets.into_iter().next().unwrap_or_default()))
+}
+
+fn settings_of(s: &VariableSettings) -> tagdb::Settings {
+    tagdb::Settings {
+        source: s.source.clone(),
+        scan_group: s.scan_group.clone(),
+        address: s.address.clone(),
+        description: s.description.clone(),
+        initial_value: s.initial_value.clone(),
+        logging_group: s.logging_group.clone(),
+        string_bytes: s.string_bytes,
     }
 }
 

@@ -228,6 +228,16 @@ pub struct PanelRef {
     pub path: String,
 }
 
+/// Panel base recién creado con `panel_create`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct CreatedPanel {
+    /// Ruta como en panel_list (`BP:\Motores`).
+    pub path: String,
+    pub name: String,
+    /// PanelID que le dio Vijeo (el siguiente libre): el número de «cambiar de panel» y del Navigator (`5: Motores`).
+    pub panel_id: u32,
+}
+
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct BuildResult {
     pub errors: i32,

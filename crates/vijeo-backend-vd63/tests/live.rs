@@ -764,6 +764,80 @@ mod live {
         std::fs::copy(&csv, std::env::temp_dir().join("vijeo-mcp-live").join("ultimo-import.csv")).ok();
     }
 
+    /// panel_create sobre el ejemplo Hardwired (paneles base 1-4, 11, 12, 21, 51-54, 61): sin nombre (Panel5), con
+    /// nombre, nombre repetido (no se crea nada) y nombres raros (o se crean con ese nombre o no queda ningún panel de
+    /// más). Luego se le ponen objetos a «Motores» (un botón que vuelve a Start) y la copia compila como el original.
+    #[test]
+    fn live_panel_create() {
+        use vijeo_core::PanelInsertRequest;
+        let Some(src) = sample() else { return };
+        let b = backend();
+        let base = b.build().unwrap().build_file(&src, None).unwrap();
+        let errs = |m: &[vijeo_core::BuildMessage]| {
+            let mut v: Vec<_> = m.iter().filter(|m| m.severity == vijeo_core::MessageSeverity::Error).map(|m| m.code).collect();
+            v.sort();
+            v
+        };
+        let info = b.projects().unwrap().open(&src).unwrap();
+        let (p, target) = (info.id, info.targets[0].name.clone());
+        let tops = b.targets().unwrap();
+        let names = || -> Vec<String> { tops.panels(p, &target).unwrap().into_iter().map(|r| r.path).collect() };
+        let start = names();
+
+        let c1 = tops.create_panel(p, &target, None).unwrap();
+        eprintln!("{c1:?}");
+        assert_eq!((c1.name.as_str(), c1.panel_id, c1.path.as_str()), ("Panel5", 5, "BP:\\Panel5"));
+        let c2 = tops.create_panel(p, &target, Some("Motores")).unwrap();
+        eprintln!("{c2:?}");
+        assert_eq!((c2.name.as_str(), c2.panel_id, c2.path.as_str()), ("Motores", 6, "BP:\\Motores"));
+        let dup = tops.create_panel(p, &target, Some("start")).unwrap_err();
+        assert_eq!(dup.code(), "invalid_argument", "{dup}");
+        let mut now = names();
+        assert!(now.contains(&c1.path) && now.contains(&c2.path), "{now:?}");
+        assert_eq!(now.len(), start.len() + 2, "{now:?}");
+        // Los tres primeros los rechazaba Vijeo (error 2003) y se deshacían; ahora no pasan la comprobación previa.
+        // «_Motor» también lo rechazaba Vijeo (2003, el panel creado se borraba): ahora tampoco pasa la comprobación previa.
+        for weird in ["Mot ores", "1Motor", "Motor-2", "Válvula", "_Motor"] {
+            let r = tops.create_panel(p, &target, Some(weird));
+            eprintln!("«{weird}»: {r:?}");
+            let after = names();
+            match r {
+                Ok(c) => {
+                    assert_eq!(c.name, weird);
+                    assert_eq!(after.len(), now.len() + 1, "{after:?}");
+                }
+                Err(e) => assert_eq!(after.len(), now.len(), "«{weird}» no se creó pero quedó un panel de más: {e} / {after:?}"),
+            }
+            now = after;
+        }
+
+        let ins: PanelInsertRequest = serde_json::from_value(serde_json::json!({
+            "project": p.0, "target": target, "panel": "Motores",
+            "items": [
+                {"create": {"type": "text", "text": "Motores", "font": "large"}, "x": 20, "y": 10},
+                {"create": {"type": "switch", "label": "Inicio", "on_touch": [{"op": "change_panel", "panel": "Start"}]}, "x": 20, "y": 60}
+            ]
+        }))
+        .unwrap();
+        let r = panels_insert(&b, &ins);
+        assert_eq!(r.objects.len(), 2, "{:?}", r.objects);
+
+        let dir = work_dir("panel_create");
+        let x = b.reports().unwrap().export_xml(p, &dir.join("xml"), true).unwrap();
+        let xml = std::fs::read_to_string(&x.path).unwrap();
+        assert!(xml.contains("Name=\"Motores\"") && xml.contains("ID=\"P6\""), "Motores (P6) no está en el XML");
+        let vdz = dir.join("McpPanelNuevo.vdz");
+        b.projects().unwrap().save(p, Some(&vdz), true).unwrap();
+        b.projects().unwrap().close(p, false).unwrap();
+        let built = b.build().unwrap().build_file(&vdz, None).unwrap();
+        eprintln!("original: {:?}\ncopia: {:?}", base.messages, built.messages);
+        assert_eq!(errs(&built.messages), errs(&base.messages));
+        // Los paneles que quedaron vacíos (Panel5 y, si Vijeo lo aceptó, _Motor) dan «Panel is empty» cada uno.
+        let empty = built.messages.iter().filter(|m| m.text.contains("Panel is empty")).count() as i32;
+        assert!(empty >= 1, "{:?}", built.messages);
+        assert_eq!(built.warnings, base.warnings + empty, "{:?}", built.messages);
+        b.shutdown().unwrap();
+    }
     /// project_goto (Navigator + Intro) y script_lint sobre el ejemplo Hardwired, que tiene paneles en carpetas
     /// y scripts. `VIJEO_MCP_LIVE_LINT` = otro .vdz cuyos scripts se revisan también (sólo se lee).
     #[test]

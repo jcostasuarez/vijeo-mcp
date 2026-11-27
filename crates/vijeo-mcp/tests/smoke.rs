@@ -119,6 +119,11 @@ fn smoke_list_and_catalog() {
     // Validación del nombre antes de tocar Vijeo.
     let (err, msg) = c.call("project_rename", json!({"project": 99, "name": "a.b"}));
     assert!(err && msg.as_str().unwrap().contains("[invalid_argument]"), "{msg}");
+    assert!(names.contains(&"panel_create"));
+    let (err, msg) = c.call("panel_create", json!({"project": 99, "target": "HMI1", "name": "a.b"}));
+    assert!(err && msg.as_str().unwrap().contains("[invalid_argument]"), "{msg}");
+    let (err, msg) = c.call("panel_create", json!({"project": 99, "target": "HMI1"}));
+    assert!(err && msg.as_str().unwrap().contains("[project_not_found]"), "{msg}");
 
     let (err, status) = c.call("vijeo_status", json!({}));
     assert!(!err, "{status}");

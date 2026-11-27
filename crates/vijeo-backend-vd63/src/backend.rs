@@ -220,6 +220,7 @@ impl Vd63Backend {
             Capability::VariableCsv,
             Capability::ScriptLint,
             Capability::PanelOpen,
+            Capability::PanelCreate,
             Capability::VariableImport,
             // Formato binario de los objetos y comandos del editor verificados con 6.3 (inventario §13.2).
             Capability::PanelObjects,
@@ -830,6 +831,32 @@ impl TargetOps for Vd63Backend {
         let path = panel_path(&found);
         inst.with_ui("abrir el panel", |u| u.open_panel(&t, &path))?;
         Ok(found)
+    }
+
+    fn create_panel(&self, p: ProjectId, target: &str, name: Option<&str>) -> VijeoResult<CreatedPanel> {
+        self.require(Capability::PanelCreate)?;
+        let name = name.map(str::trim).filter(|n| !n.is_empty());
+        if let Some(n) = name {
+            validate::name("name", n)?;
+            // Convención de nombres de Vijeo (error 2003 «doesn't follow naming convention», verificado con
+            // «Mot ores», «1Motor», «Motor-2» y «_Motor»): una letra y luego letras, dígitos o «_». Lo demás lo decide Vijeo.
+            let mut cs = n.chars();
+            let ok = cs.next().is_some_and(|c| c.is_ascii_alphabetic()) && cs.all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if !ok {
+                return Err(VijeoError::invalid("name", format!("«{n}» no sigue la convención de nombres de Vijeo: una letra y luego letras, dígitos o «_», sin espacios ni guiones")));
+            }
+        }
+        let inst = self.get(p)?;
+        let t = select_target(self.targets_of(&inst)?, Some(target))?.remove(0).name;
+        if let Some(n) = name {
+            let existing = self.from_vxml(p, Some(&t), vxml::base_panel_refs)?;
+            if let Some(r) = existing.iter().find(|r| r.path.rsplit('\\').next().is_some_and(|x| x.eq_ignore_ascii_case(n))) {
+                return Err(VijeoError::invalid("name", format!("ya hay un panel base con ese nombre: {}", r.path)));
+            }
+        }
+        let (panel_id, got) = inst.with_ui("crear el panel", |u| u.new_panel(&t, name))?;
+        inst.mark_unsaved();
+        Ok(CreatedPanel { path: format!("BP:\\{got}"), name: got, panel_id })
     }
 }
 

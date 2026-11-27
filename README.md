@@ -1,6 +1,6 @@
 # vijeo-mcp
 
-Servidor MCP (stdio, Rust + `rmcp` 3.8) para pilotar **Vijeo-Designer** como lo haría un usuario. Cada proyecto abierto es una instancia normal de Vijeo-Frame, que el MCP maneja con sus menús, asistentes, diálogos y Navigator. No usa la API COM (en modo SoMachine añadía un driver sin dirección a cada target). Sin ella, el MCP **ya no puede crear ni editar pantallas**: el import de XML era lo único que la usaba y no tiene vía alternativa (§12.11). Diseño en [docs/arquitectura.md](docs/arquitectura.md); base empírica en [docs/vijeo-designer-6.3-api-inventory.md](docs/vijeo-designer-6.3-api-inventory.md): §12.9 explica el problema de COM, §12.10 la instancia normal y §12.11 el import XML sin COM.
+Servidor MCP (stdio, Rust + `rmcp` 3.8) para pilotar **Vijeo-Designer** como lo haría un usuario. Cada proyecto abierto es una instancia normal de Vijeo-Frame, que el MCP maneja con sus menús, asistentes, diálogos y Navigator. No usa la API COM (en modo SoMachine añadía un driver sin dirección a cada target). Las pantallas se leen, editan y crean con el portapapeles de Vijeo, como Copiar/Pegar. La documentación de diseño y de ingeniería inversa se guarda aparte, en local (`docs/`, fuera del repositorio).
 
 ## Compilar
 

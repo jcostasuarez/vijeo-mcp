@@ -8,12 +8,12 @@
 /.mcp.json
 /.claude/settings.local.json
 
-# Material de Schneider Electric que no se publica (se queda sólo en local):
-# pseudocódigo descompilado, volcados de sus type libraries, ficheros copiados
-# de la instalación y la herramienta de descifrado de .zdat.
-/docs/reference/vd-6.3/decompiled/
-/docs/reference/vd-6.3/typelibs/
-/docs/reference/vd-6.3/MathMethodDefine.xml
+# Memoria y documentación de trabajo (sólo local, por ahora no se publica): qué se hizo y qué falta,
+# bibliotecas de Vijeo analizadas y lo que se sacó de cada una, formatos, pruebas. Incluye material de
+# Schneider Electric (volcados de type libraries, ficheros copiados de la instalación).
+/docs/
+
+# Material de Schneider Electric que no se publica: la herramienta de descifrado de .zdat.
 /tools/vdat_decrypt32.ps1
 
 # Proyectos y exportaciones de Vijeo (pueden ser de clientes)

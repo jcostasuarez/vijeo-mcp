@@ -901,7 +901,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vijeo-backend-vd63"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cfb",
  "roxmltree",
@@ -917,7 +917,7 @@ dependencies = [
 
 [[package]]
 name = "vijeo-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "schemars",
  "serde",
@@ -927,11 +927,11 @@ dependencies = [
 
 [[package]]
 name = "vijeo-dat"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "vijeo-mcp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "rmcp",
@@ -948,7 +948,7 @@ dependencies = [
 
 [[package]]
 name = "vijeo-ui"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "tracing",
  "vijeo-core",

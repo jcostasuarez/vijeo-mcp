@@ -506,6 +506,13 @@ pub struct ScriptLint {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub script_type: Option<String>,
     pub lines: usize,
+    /// Resultado del compilador de scripts de Vijeo: `true` compila, `false` no (sus errores van en `issues`), ausente
+    /// si no se pudo comprobar (ver `compiler_note`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compiles: Option<bool>,
+    /// Por qué no se comprobó con el compilador (usa objetos que el MCP todavía no le describe, o no se pudo lanzar).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compiler_note: Option<String>,
     pub issues: Vec<ScriptIssue>,
 }
 

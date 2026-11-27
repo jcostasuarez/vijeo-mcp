@@ -1702,8 +1702,21 @@ impl ReportOps for Vd63Backend {
                 Some(code) => vec![("script".to_owned(), None, code.to_owned())],
                 None => vxml::scripts(t),
             };
-            for (location, script_type, code) in scripts {
-                out.push(ScriptLint { target: vxml::target_name(t), location, script_type, lines: code.lines().count(), issues: lint::lint(&code, &ctx) });
+            // Todos los scripts del target en una sola llamada al compilador de Vijeo (ScriptEngine.dll).
+            let sources: Vec<String> = scripts.iter().map(|s| script::normalize(&s.2)).collect();
+            let compiled = script::compile(&self.inst.frame_dir, &vxml::script_symbols(t), &sources);
+            for (i, (location, script_type, code)) in scripts.into_iter().enumerate() {
+                let mut issues = lint::lint(&code, &ctx);
+                let (compiles, compiler_note) = match &compiled {
+                    Ok(results) => {
+                        let check = lint::merge_compiler(&issues, &results[i], &ctx);
+                        issues.extend(check.issues);
+                        issues.sort_by_key(|x| (x.line, x.column));
+                        (check.compiles, check.note)
+                    }
+                    Err(e) => (None, Some(format!("no se pudo usar el compilador de Vijeo: {e}"))),
+                };
+                out.push(ScriptLint { target: vxml::target_name(t), location, script_type, lines: code.lines().count(), compiles, compiler_note, issues });
             }
         }
         Ok(out)

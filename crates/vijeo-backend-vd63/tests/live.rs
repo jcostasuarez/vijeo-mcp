@@ -1235,6 +1235,61 @@ mod live {
         b.shutdown().unwrap();
     }
 
+    /// Mover variables de carpeta sin Vijeo (`move`) en una copia del ejemplo Modbus: entre dos carpetas
+    /// (`reTotalEnergy`, pantalla Energy), de la raíz a una carpeta nueva (`xRTCSyncDone`, enclavamiento y bit de la acción
+    /// global) y de una carpeta a la raíz (`iGetRTCSec`, disparador y script de la acción, smart object). La copia compila
+    /// con los errores del original y, en el XML de Vijeo, cada variable está con su nombre nuevo en los mismos sitios.
+    #[test]
+    fn live_offline_move_variables() {
+        use vijeo_core::VariablesEditRequest;
+        let Some(src) = modbus() else { return };
+        let b = backend();
+        let cfg = b.config().unwrap();
+        let dir = work_dir("offline_move");
+        let vdz = dir.join("McpMover.vdz");
+        std::fs::copy(&src, &vdz).unwrap();
+        let errs = |m: &[vijeo_core::BuildMessage]| {
+            let mut v: Vec<_> = m.iter().filter(|m| m.severity == vijeo_core::MessageSeverity::Error).map(|m| m.code).collect();
+            v.sort();
+            v
+        };
+        let base = b.build().unwrap().build_file(&src, None).unwrap();
+        let moves = [
+            ("MyController.Energy.reTotalEnergy", "MyController.DateAndTime", "MyController.DateAndTime.reTotalEnergy"),
+            ("xRTCSyncDone", "Mcp.Sub", "Mcp.Sub.xRTCSyncDone"),
+            ("MyController.DateAndTime.iGetRTCSec", "", "iGetRTCSec"),
+        ];
+        let edits: Vec<serde_json::Value> = moves.iter().map(|(n, to, _)| serde_json::json!({"op": "move", "name": n, "to": to})).collect();
+        let req: VariablesEditRequest = serde_json::from_value(serde_json::json!({"path": vdz, "edits": edits})).unwrap();
+        let r = cfg.edit_file_variables(&req).unwrap();
+        eprintln!("{:#?}", r.changes);
+        assert!(r.written && r.changes.len() == 3, "{r:?}");
+
+        let built = b.build().unwrap().build_file(&vdz, None).unwrap();
+        assert_eq!(errs(&built.messages), errs(&base.messages), "{:?}", built.messages);
+
+        let info = b.projects().unwrap().open(&vdz).unwrap();
+        let out = b.reports().unwrap().export_xml(info.id, &dir.join("export"), true).unwrap();
+        b.projects().unwrap().close(info.id, false).unwrap();
+        let text = std::fs::read_to_string(&out.path).unwrap();
+        let doc = vijeo_backend_vd63::vxml::parse(&text).unwrap();
+        let orig_text = vijeo_backend_vd63::reports::decode_text(&std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/reference/vd-6.3/corpus/xml/Compact_Modbus SL_M221 Book.vxml")).unwrap());
+        let orig = vijeo_backend_vd63::vxml::parse(&orig_text).unwrap();
+        let xref = |doc: &roxmltree::Document, n: &str| -> Option<Vec<String>> {
+            vijeo_backend_vd63::vxml::targets(doc).into_iter().flat_map(vijeo_backend_vd63::vxml::cross_references).find(|r| r.variable == n).map(|r| r.references)
+        };
+        for (old, _, new) in moves {
+            let (was, now) = (xref(&orig, old).unwrap(), xref(&doc, new));
+            eprintln!("{old}: {was:?}\n{new}: {now:?}");
+            assert!(!was.is_empty());
+            assert_eq!(now.as_ref(), Some(&was), "{new}");
+            assert!(xref(&doc, old).is_none(), "{old} ya no existe");
+        }
+        let scripts: Vec<String> = vijeo_backend_vd63::vxml::targets(&doc).into_iter().flat_map(vijeo_backend_vd63::vxml::scripts).map(|s| s.2).collect();
+        assert!(scripts.iter().any(|s| s.contains("iGetRTCSec.getIntValue()")) && !scripts.iter().any(|s| s.contains("DateAndTime.iGetRTCSec")), "{scripts:?}");
+        b.shutdown().unwrap();
+    }
+
     /// Variables sin Vijeo en un proyecto de dos targets (`McpDosTargets.vdz` de `docs/`, hecho con Vijeo: `Comun` en
     /// los dos con tipos distintos): se editan los dos targets de una copia, la copia compila sin errores, su XML tiene las
     /// variables de cada target como se escribieron (también leídas con el proyecto abierto) y lo que guarda Vijeo se

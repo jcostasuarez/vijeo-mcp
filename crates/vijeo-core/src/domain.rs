@@ -611,6 +611,9 @@ pub enum VariableEdit {
     /// Cambia el nombre de una carpeta (`A.Vieja`) dentro de su carpeta padre (`new_name`: sólo el nombre) y el de todo lo
     /// que contiene, también donde se usa, con las mismas comprobaciones que `rename`.
     RenameFolder { path: String, new_name: String },
+    /// Mueve una variable (`A.Var`) a la carpeta `to` (`B.C`; vacío = la raíz; las que falten se crean), con el mismo
+    /// nombre, y la cambia también donde se usa, con las mismas comprobaciones que `rename`.
+    Move { name: String, to: String },
     /// Crea una carpeta (`A.B`, con las que falten).
     AddFolder { path: String },
     /// Borra una carpeta vacía.

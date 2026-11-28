@@ -17,7 +17,7 @@ use vijeo_ui::process;
 
 use crate::catalog::{split_hmi_type, Catalog};
 use crate::ui_project::{self, NewEquipment, NewTarget, Timeouts, UiProject};
-use crate::{dataconv, drivers, feedback, lint, objects, panel_ops, probe, reports, script, swx, tagdb, toolchest, usage, validate, varcsv, vdz, vxml, xsd};
+use crate::{dataconv, drivers, feedback, lint, objects, panel_ops, probe, reports, script, screens, swx, tagdb, toolchest, usage, validate, varcsv, vdz, vxml, xsd};
 use crate::widgets::build::{self, RefKind};
 
 /// Esquema público del XML de proyecto, relativo a `Vijeo-Frame`.
@@ -213,7 +213,6 @@ impl Vd63Backend {
             Capability::Build,
             Capability::Reports,
             Capability::VariableLookup,
-            Capability::PanelList,
             // El formato de lo que se escribe sólo está verificado con 6.3.
             Capability::ConfigEdit,
             Capability::OfflineVariables,
@@ -871,11 +870,6 @@ impl TargetOps for Vd63Backend {
         inst.mark_unsaved();
         let t = select_target(self.targets_of(&inst)?, Some(new_name))?.remove(0);
         Ok(self.target_info(&t))
-    }
-
-    fn panels(&self, p: ProjectId, target: &str) -> VijeoResult<Vec<PanelRef>> {
-        self.require(Capability::PanelList)?;
-        self.from_vxml(p, Some(target), vxml::base_panel_refs)
     }
 
     fn open_panel(&self, p: ProjectId, target: &str, panel: &str) -> VijeoResult<PanelRef> {
@@ -2039,6 +2033,22 @@ impl ConfigOps for Vd63Backend {
         usage_of(&mut swx::open_swx(&swx_path)?, target, system)
     }
 
+    fn file_screens(&self, vdz: &Path, target: Option<&str>) -> VijeoResult<Vec<ScreenInfo>> {
+        self.require(Capability::OfflineVariables)?;
+        check_vdz_input("path", vdz)?;
+        screens_of(&mut swx::open_vdz(vdz)?, target)
+    }
+
+    fn project_screens(&self, p: ProjectId, target: Option<&str>) -> VijeoResult<Vec<ScreenInfo>> {
+        self.require(Capability::OfflineVariables)?;
+        let inst = self.get(p)?;
+        let swx_path = inst.with_ui("vdz_panel_list", |u| {
+            u.save()?;
+            Ok(u.swx())
+        })?;
+        screens_of(&mut swx::open_swx(&swx_path)?, target)
+    }
+
     fn edit_file_variables(&self, req: &VariablesEditRequest) -> VijeoResult<VariablesEditResult> {
         self.require(Capability::OfflineVariables)?;
         let vdz = req.path.as_path();
@@ -2185,6 +2195,33 @@ fn variables_of(cfb: &mut Cfb, target: Option<&str>, elements: bool, system: boo
     for k in wanted {
         db.select(k)?;
         out.extend(db.variables(&names[k], elements, system));
+    }
+    Ok(out)
+}
+
+/// Pantallas de `target` (sin él, de todos los targets), leídas del `.SwxCF`.
+fn screens_of(cfb: &mut Cfb, target: Option<&str>) -> VijeoResult<Vec<ScreenInfo>> {
+    let names = swx::target_names(cfb).unwrap_or_default();
+    let wanted: Vec<usize> = match target {
+        Some(t) => vec![target_index(&names, Some(t))?],
+        None => (0..names.len()).collect(),
+    };
+    let mut out = Vec::new();
+    for k in wanted {
+        let streams: BTreeMap<String, Vec<u8>> = target_streams(cfb, k).into_iter().map(|(p, b)| (p.replace('\\', "/"), b)).collect();
+        for s in screens::screens(&streams) {
+            out.push(ScreenInfo {
+                target: names[k].clone(),
+                group: s.group.to_owned(),
+                path: s.path(),
+                name: s.name.clone(),
+                number: s.id,
+                panel_ref: (s.group == screens::BASE).then(|| format!("BP:\\{}", s.path())),
+                window_number: s.window.as_ref().map(|w| w.1),
+                window: s.window.map(|w| w.0),
+                objects: s.objects,
+            });
+        }
     }
     Ok(out)
 }

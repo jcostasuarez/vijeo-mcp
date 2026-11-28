@@ -14,6 +14,7 @@ pub mod script;
 pub mod toolchest;
 pub mod widgets;
 pub mod swx;
+pub mod screens;
 pub mod tagdb;
 pub mod usage;
 mod ui_project;

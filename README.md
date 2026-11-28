@@ -38,7 +38,7 @@ Qué modelos se pueden crear: la regla del catálogo supone la licencia estánda
 ## Requisitos
 
 - Vijeo-Designer 6.3 instalado, con su catálogo de modelos (`TargetInfo`) y sus drivers (`HMI IO`).
-- Para las lecturas del XML (`project_export_xml`, `variable_lookup`, `panel_list`, `panel_report` y `action_list`): `HKLM\SOFTWARE\WOW6432Node\Schneider Electric\Vijeo-Designer63\Vijeo-Frame\Options\SupportsXMLImportExport` = 1 (DWORD). Sin esa clave, Vijeo no ofrece el formato `.vxml` en Export Project y la herramienta devuelve `unsupported`, indicando la clave que falta.
+- Para las lecturas del XML (`project_export_xml`, `variable_lookup`, `panel_report` y `action_list`): `HKLM\SOFTWARE\WOW6432Node\Schneider Electric\Vijeo-Designer63\Vijeo-Frame\Options\SupportsXMLImportExport` = 1 (DWORD). Sin esa clave, Vijeo no ofrece el formato `.vxml` en Export Project y la herramienta devuelve `unsupported`, indicando la clave que falta.
 
 ## Herramientas
 
@@ -52,7 +52,7 @@ Qué modelos se pueden crear: la regla del catálogo supone la licencia estánda
 | `project_save`, `project_rename` | Guarda la copia de trabajo y empaqueta el `.vdz` en su ruta o en `save_as`. `project_rename` cambia el nombre que se usa al empaquetar |
 | `project_show_in_vijeo` | Abre un `.vdz` (o el de un proyecto abierto) en una ventana de Vijeo para el usuario, como el doble clic. Vijeo lo importa a su lista de proyectos, donde los `.vdz` del MCP no aparecen hasta abrirlos. Se niega si Vijeo ya tiene un proyecto con ese nombre |
 | `vdz_copy`, `vdz_rename`, `vdz_delete` | Sin Vijeo: copian un `.vdz` (con otro nombre de proyecto, por defecto el del fichero nuevo), lo renombran (fichero y/o nombre de proyecto) o lo mandan a la Papelera. Nunca en Vijeo-Manager ni sobre proyectos abiertos en el MCP |
-| `target_list`, `target_add`, `target_rename`, `target_delete`, `panel_list` | Targets (añadir con el asistente New Target; renombrar y borrar en el Navigator) y paneles base (`BP:\...`) |
+| `target_list`, `target_add`, `target_rename`, `target_delete` | Targets (añadir con el asistente New Target; renombrar y borrar en el Navigator) |
 | `project_build`, `target_build` | Build All: nº de errores y warnings y el texto de cada uno, de la Feedback Zone. Con `project` compila el estado actual del proyecto abierto; con `path` compila una copia de un `.vdz` sin tocarlo (~25 s con un proyecto real) |
 | `project_messages` | Contenido actual de la Feedback Zone de un proyecto abierto |
 | `target_config` | Drivers, equipos (IP, puerto, Unit ID, parámetros) y propiedades de descarga de cada target, de un proyecto abierto (su copia de trabajo) o de cualquier `.vdz` sin abrir Vijeo |
@@ -60,6 +60,7 @@ Qué modelos se pueden crear: la regla del catálogo supone la licencia estánda
 | `vdz_variable_list` | En un instante y sin el XML: variables de un `.vdz` sin abrir Vijeo (`path`) o de un proyecto abierto (`project`, con lo no guardado), leídas de su base de variables (target, tipo, origen, dirección, descripción, grupo de escaneo, valor inicial, bytes de las STRING; con `include_system`, también las del sistema), lo mismo que exporta Vijeo en el XML. Con varios targets, todas (cada una con el suyo) o las de `target` |
 | `vdz_variable_edit` | Sin Vijeo y en menos de un segundo: crea, cambia y borra variables (internas y externas) y carpetas en un `.vdz`. Se niega a borrar una variable que usan pantallas, acciones, alarmas u otras variables (dice dónde), salvo con `force`. Reescribe `path` o escribe `save_as`; `dry_run` sólo comprueba. Con varios targets, `target` dice cuál (cada uno tiene sus variables); alarmas, estructuras y tipos de datos todavía no |
 | `vdz_cross_references` | En un instante y sin el XML: dónde se usa cada variable de un `.vdz` (`path`) o de un proyecto abierto (`project`): pantallas con el objeto (`Panel «Energy» › DataDisplay «TotalEnergy»`, ventanas emergentes, paneles maestros), acciones globales, alarmas y referencias indirectas de otras variables; cuáles no se usan y qué enlaces de las pantallas apuntan a variables borradas (los que Vijeo da por inválidos al compilar). Lo mismo que el XML de Vijeo, comprobado objeto por objeto en los ejemplos |
+| `vdz_panel_list` | En un instante y sin el XML: pantallas de un `.vdz` (`path`) o de un proyecto abierto (`project`): paneles base con sus carpetas (`panel_ref` `BP:\Carpeta\Panel`, la ruta de `project_goto` y de las herramientas de pantallas), paneles maestros y ventanas emergentes, con su número (PanelID; WindowID de la ventana) y su nº de objetos. Lo mismo que el XML de Vijeo |
 | `project_export_xml` | Export Project: escribe `<dir>\<proyecto>.vxml` (public.xsd) y la carpeta `<dir>\<proyecto>\` con las imágenes |
 | `variable_lookup` | Existencia de una variable y su tipo, leídos del `.vxml` |
 | `panel_report`, `action_list` | Paneles con sus acciones de panel, y acciones globales (disparador, enclavamiento, script u operaciones), del `.vxml` |

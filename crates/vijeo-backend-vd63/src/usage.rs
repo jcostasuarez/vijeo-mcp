@@ -27,24 +27,6 @@ pub struct Usage {
     pub broken: BTreeSet<Broken>,
 }
 
-/// Panel al que pertenece un stream de `WindowList`/`PopupWindowList` y cómo llamarlo.
-fn panel_label(path: &str, streams: &BTreeMap<String, Vec<u8>>, popups: &BTreeMap<String, String>) -> Option<String> {
-    let dir = path.rsplit_once('/')?.0;
-    let name = streams.get(&format!("{dir}/WindowObject")).and_then(|b| strings_in(b, 0).into_iter().next()).unwrap_or_else(|| dir.rsplit('/').next().unwrap_or(dir).to_owned());
-    if dir.contains("/PopupWindowList/") {
-        let group = dir.split("/PopupWindowList/").nth(1)?.split('/').next()?;
-        let window = popups.get(group).cloned().unwrap_or_else(|| group.to_owned());
-        return Some(format!("Window «{window}» › Panel «{name}»"));
-    }
-    if dir.contains("/MasterPanelsNodeStorage/") {
-        return Some(format!("MasterPanel «{name}»"));
-    }
-    if dir.contains("/DefinitionNodeStorage/") {
-        return Some(format!("Template «{name}»"));
-    }
-    Some(format!("Panel «{name}»"))
-}
-
 /// Nombre legible de un stream que no es de un panel.
 fn stream_label(path: &str) -> String {
     const KNOWN: &[(&str, &str)] = &[
@@ -74,7 +56,9 @@ pub fn scan(db: &TagDb, streams: &[(String, Vec<u8>)]) -> Usage {
     let rows = db.variables("", true, true);
     let names: BTreeSet<&str> = rows.iter().map(|v| v.name.as_str()).collect();
     let by_id: BTreeMap<u32, &str> = db.vars.iter().map(|v| (v.id, v.name.as_str())).collect();
-    let popups = popup_names(&streams);
+    // Almacén de cada panel → cómo se llama en los sitios (`Folder «F» › Panel «P»`).
+    let panels: Vec<(String, String)> = crate::screens::screens(&streams).into_iter().map(|s| (format!("{}/", s.dir), s.label())).collect();
+    let panel_of = |path: &str| panels.iter().find(|(d, _)| path.starts_with(d.as_str())).map(|(_, l)| l.clone());
     let mut u = Usage::default();
 
     let look = |strings: &[String], here: &str, u: &mut Usage| {
@@ -118,7 +102,10 @@ pub fn scan(db: &TagDb, streams: &[(String, Vec<u8>)]) -> Usage {
             continue;
         }
         if path.ends_with("/GraphicalObject") {
-            let Some(panel) = panel_label(path, &streams, &popups) else { continue };
+            let Some(panel) = panel_of(path) else {
+                look(&strings_in(b, 0), &stream_label(path), &mut u);
+                continue;
+            };
             match PanelObjects::parse(b) {
                 Ok(p) => {
                     fn go(n: &Node, prefix: &str, out: &mut Vec<(String, Vec<String>)>) {
@@ -140,10 +127,7 @@ pub fn scan(db: &TagDb, streams: &[(String, Vec<u8>)]) -> Usage {
             }
             continue;
         }
-        let here = match panel_label(path, &streams, &popups) {
-            Some(p) if path.contains("/WindowList/") || path.contains("/PopupWindowList/") => p,
-            _ => stream_label(path),
-        };
+        let here = panel_of(path).unwrap_or_else(|| stream_label(path));
         look(&strings_in(b, 0), &here, &mut u);
     }
     // En la propia base: referencias indirectas (`Carpeta.%s.Var` con su parámetro) y alarmas de cada variable.
@@ -167,21 +151,6 @@ pub fn scan(db: &TagDb, streams: &[(String, Vec<u8>)]) -> Usage {
         }
     }
     u
-}
-
-/// Nombre de cada grupo de ventanas emergentes (`UniqueNameK` → nombre de la ventana).
-fn popup_names(streams: &BTreeMap<String, Vec<u8>>) -> BTreeMap<String, String> {
-    let mut out = BTreeMap::new();
-    for (p, b) in streams {
-        if let Some(rest) = p.split("/PopupWindowList/").nth(1) {
-            if let Some((group, "PageListProperties")) = rest.split_once('/') {
-                if let Some(name) = strings_in(b, 0).into_iter().next() {
-                    out.insert(group.to_owned(), name);
-                }
-            }
-        }
-    }
-    out
 }
 
 /// Enlaces `{T,2:1.<id>,Nombre}` y `{T,3:1.<id>.<miembro>,Miembro}` de un texto: (tipo, id, miembro, nombre guardado).

@@ -93,6 +93,11 @@ mod live {
         p.is_file().then_some(p)
     }
 
+    /// Rutas `BP:\…` de los paneles base de un target, leídas sin el XML (`vdz_panel_list` con `project`).
+    fn base_refs(c: &dyn vijeo_core::ConfigOps, p: vijeo_core::ProjectId, target: &str) -> Vec<String> {
+        c.project_screens(p, Some(target)).unwrap().into_iter().filter_map(|s| s.panel_ref).collect()
+    }
+
     fn backend() -> std::sync::Arc<dyn vijeo_core::Backend> {
         let inst = installation().expect("Vijeo 6.3");
         // Sin la caché de --probe-models del usuario: los tests ven la regla de creabilidad.
@@ -159,7 +164,7 @@ mod live {
         let names: Vec<&str> = list.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["Pantalla1", "AA", "MM"]);
         assert!(list[1].1.starts_with("Model_HMIG5U") && list[2].1 == "Model_HMIS5T", "{list:?}");
-        assert!(!targets.panels(p, "Pantalla1").unwrap().is_empty());
+        assert!(!base_refs(backend.config().unwrap(), p, "Pantalla1").is_empty());
         assert!(backend.reports().unwrap().actions(p, None).unwrap().is_empty());
 
         let b = backend.build().unwrap().build_target(p, "Pantalla1").unwrap();
@@ -206,7 +211,7 @@ mod live {
 
         let panels = reports.panels(p, None).unwrap();
         let mut base: Vec<String> = panels.iter().filter_map(|x| x.panel_ref.clone()).collect();
-        let mut listed: Vec<String> = backend.targets().unwrap().panels(p, &target).unwrap().into_iter().map(|x| x.path).collect();
+        let mut listed: Vec<String> = base_refs(backend.config().unwrap(), p, &target);
         base.sort();
         listed.sort();
         assert!(!base.is_empty());
@@ -685,6 +690,53 @@ mod live {
         ProjectOps::close(&b, info.id, true).unwrap();
         assert!(after_build, "tras Build All el diálogo también tiene que abrirse");
     }
+
+    /// Pantallas sin el XML: en una copia del ejemplo Modbus se crea con Vijeo una carpeta en Base Panels (New Folder
+    /// 0xC07B) con un panel y una subcarpeta dentro. `vdz_panel_list` con `project` y luego del `.vdz` guardado da lo
+    /// mismo que el XML exportado (grupo, ruta, nombre, id) y project_goto abre el panel de la carpeta con su
+    /// `panel_ref`. El `.vdz` resultante es el `McpCarpetas.vdz` del corpus de `docs/`.
+    #[test]
+    fn live_offline_panel_list() {
+        use vijeo_core::{ConfigOps, ProjectOps, TargetOps};
+        let Some(src) = modbus() else { return };
+        let inst = installation().expect("Vijeo 6.3");
+        let cfg = BackendConfig { cache_dir: Some(std::env::temp_dir().join("vijeo-mcp-live").join("no-cache")), ..Default::default() };
+        let b = vijeo_backend_vd63::Vd63Backend::new(&inst, Support::Exact, &cfg).unwrap();
+        let dir = work_dir("probe_folders");
+        let info = ProjectOps::open(&b, &src).unwrap();
+        let (p, target) = (info.id, info.targets[0].name.clone());
+        let base = ["Graphical Panels", "Base Panels"];
+        eprintln!("{:?}", b.probe_node_command(p, &target, &base, 0xC07B));
+        eprintln!("{:?}", b.probe_node_command(p, &target, &["Graphical Panels", "Base Panels", "Folder1"], 0xC065));
+        eprintln!("{:?}", b.probe_node_command(p, &target, &["Graphical Panels", "Base Panels", "Folder1"], 0xC07B));
+        let open = ConfigOps::project_screens(&b, p, None).unwrap();
+        eprintln!("{open:#?}");
+        let inside: Vec<_> = open.iter().filter(|s| s.path.contains('\\') && s.group == "Base Panels").collect();
+        assert_eq!(inside.len(), 1, "{open:#?}");
+        let panel_ref = inside[0].panel_ref.clone().unwrap();
+        assert!(panel_ref.starts_with(r"BP:\Folder1\"), "{panel_ref}");
+
+        let xml = vijeo_core::ReportOps::export_xml(&b, p, &dir.join("export"), true).unwrap();
+        let text = std::fs::read_to_string(&xml.path).unwrap();
+        let doc = vijeo_backend_vd63::vxml::parse(&text).unwrap();
+        let mut expected: Vec<(String, String, String)> =
+            vijeo_backend_vd63::vxml::targets(&doc).into_iter().flat_map(vijeo_backend_vd63::vxml::panel_ids).map(|x| (x.group, x.path, x.id)).collect();
+        let key = |all: &[vijeo_core::ScreenInfo]| {
+            let mut v: Vec<(String, String, String)> = all.iter().map(|s| (s.group.clone(), s.path.clone(), format!("P{}", s.number))).collect();
+            v.sort();
+            v
+        };
+        expected.sort();
+        assert_eq!(key(&open), expected, "vdz_panel_list (project) / XML");
+        assert_eq!(TargetOps::open_panel(&b, p, &target, &panel_ref).unwrap().path, panel_ref);
+
+        let out = dir.join("McpCarpetas.vdz");
+        ProjectOps::save(&b, p, Some(&out), true).unwrap();
+        ProjectOps::close(&b, p, true).unwrap();
+        let file = ConfigOps::file_screens(&b, &out, None).unwrap();
+        assert_eq!(key(&file), expected, "vdz_panel_list (path) / XML");
+    }
+
 
     /// Varios Import Variables seguidos en la misma instancia y, después de un Build All, las herramientas del Navigator.
     /// Antes fallaban: Vijeo activa la Feedback Zone al importar o compilar y MFC descartaba los comandos del Navigator
@@ -1168,7 +1220,8 @@ mod live {
         let info = b.projects().unwrap().open(&src).unwrap();
         let (p, target) = (info.id, info.targets[0].name.clone());
         let tops = b.targets().unwrap();
-        let names = || -> Vec<String> { tops.panels(p, &target).unwrap().into_iter().map(|r| r.path).collect() };
+        let cfg = b.config().unwrap();
+        let names = || -> Vec<String> { base_refs(cfg, p, &target) };
         let start = names();
 
         let c1 = tops.create_panel(p, &target, vijeo_core::PanelKind::Base, None).unwrap();
@@ -1296,7 +1349,8 @@ mod live {
         let info = b.projects().unwrap().open(&src).unwrap();
         let (p, target) = (info.id, info.targets[0].name.clone());
         let tops = b.targets().unwrap();
-        let names = || -> Vec<String> { tops.panels(p, &target).unwrap().into_iter().map(|r| r.path).collect() };
+        let cfg = b.config().unwrap();
+        let names = || -> Vec<String> { base_refs(cfg, p, &target) };
         let has = |n: &str| names().iter().any(|x| x == n);
 
         let r = tops.rename_panel(p, &target, PanelKind::Base, "RFID_1", "Rfid_Uno").unwrap();
@@ -1393,21 +1447,21 @@ mod live {
         for l in outline.unwrap() {
             eprintln!("{l}");
         }
-        let panels = TargetOps::panels(&b, p, &target).unwrap();
+        let panels = base_refs(&b, p, &target);
         eprintln!("{panels:?}");
-        let first = TargetOps::open_panel(&b, p, &target, &panels[0].path).unwrap();
-        assert_eq!(first.path, panels[0].path);
+        let first = TargetOps::open_panel(&b, p, &target, &panels[0]).unwrap();
+        assert_eq!(first.path, panels[0]);
         // Otro panel, por su nombre: el primero puede estar ya abierto al abrir el proyecto.
         let other = TargetOps::open_panel(&b, p, &target, "cabinet").unwrap();
         assert_eq!(other.path, "BP:\\Cabinet");
         let back = TargetOps::open_panel(&b, p, &target, "BP:\\Start").unwrap();
         assert_eq!(back.path, "BP:\\Start");
-        if let Some(nested) = panels.iter().find(|r| r.path.matches('\\').count() > 1) {
-            let name = nested.path.rsplit('\\').next().unwrap().to_lowercase();
+        if let Some(nested) = panels.iter().find(|r| r.matches('\\').count() > 1) {
+            let name = nested.rsplit('\\').next().unwrap().to_lowercase();
             let opened = TargetOps::open_panel(&b, p, &target, &name);
             eprintln!("por nombre ({name}): {opened:?}");
             if let Ok(o) = opened {
-                assert_eq!(o.path, nested.path);
+                assert_eq!(&o.path, nested);
             }
         }
         assert_eq!(TargetOps::open_panel(&b, p, &target, "NoExiste").unwrap_err().code(), "invalid_argument");

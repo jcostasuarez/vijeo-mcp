@@ -185,6 +185,11 @@ fn smoke_list_and_catalog() {
             let (err, msg) = c.call("vdz_variable_edit", json!({"path": modbus, "save_as": out, "dry_run": true, "edits": [{"op": "rename", "name": "MyController.Energy.reTotalEnergy", "new_name": new_name}]}));
             assert!(err && msg.as_str().unwrap().contains("[invalid_argument]"), "{new_name}: {msg}");
         }
+        // Las carpetas también; la que nombra una referencia indirecta (MyController.%s.wComErrorCode) se niega.
+        let (err, r) = c.call("vdz_variable_edit", json!({"path": modbus, "save_as": out, "dry_run": true, "edits": [{"op": "rename_folder", "path": "MyController.Energy", "new_name": "Energia"}]}));
+        assert!(!err && r["variables"].as_array().unwrap().iter().any(|v| v["name"] == "MyController.Energia.reTotalEnergy"), "{r}");
+        let (err, msg) = c.call("vdz_variable_edit", json!({"path": modbus, "save_as": out, "dry_run": true, "edits": [{"op": "rename_folder", "path": "MyController", "new_name": "Ctl"}]}));
+        assert!(err && msg.as_str().unwrap().contains("wRefComErrorCode"), "{msg}");
         // El borrado se niega diciendo dónde se usa (pantalla y objeto).
         let (_, msg) = c.call("vdz_variable_edit", json!({"path": modbus, "save_as": out, "dry_run": true, "edits": [{"op": "delete", "name": "MyController.Energy.reTotalEnergy"}]}));
         assert!(msg.as_str().unwrap().contains("Panel «Energy» › DataDisplay «TotalEnergy»"), "{msg}");

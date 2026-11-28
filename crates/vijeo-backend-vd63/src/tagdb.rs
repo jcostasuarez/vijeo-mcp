@@ -1129,17 +1129,70 @@ impl TagDb {
             return Err(format!("ya hay una variable o carpeta «{full}»"));
         }
         let name_id = get(&v.props, prop::NAME).and_then(Prop::int).ok_or("variable sin nombre")?;
-        let node = self.names.node_with_entry(name_id).ok_or_else(|| format!("el nombre {name_id} no está en NameServer"))?;
-        let &(_, _, pos, size) = self.names.nodes[node].entries.iter().find(|e| e.0 == name_id).unwrap();
-        let mut text = utf16_bytes(new_leaf);
+        self.ns_set_entry(name_id, new_leaf)?;
+        self.reindex()?;
+        Ok(full)
+    }
+
+    /// Cambia el nombre de una carpeta dentro de su carpeta padre (`A.Vieja` → `A.<new_leaf>`): sólo su entrada de
+    /// `NameServer`; el id no cambia y lo que contiene pasa a llamarse `A.<new_leaf>.…`. Devuelve la ruta nueva.
+    pub fn rename_folder(&mut self, path: &str, new_leaf: &str) -> Result<String, String> {
+        let f = self.find_folder(path.trim().trim_matches('.')).cloned().ok_or_else(|| format!("no hay ninguna carpeta «{}»", path.trim()))?;
+        let new_leaf = new_leaf.trim();
+        if new_leaf.contains('.') {
+            return Err("new_name es sólo el nombre, sin carpetas: la carpeta se queda donde está".into());
+        }
+        let prefix = f.path.rsplit_once('.').map(|(p, _)| format!("{p}.")).unwrap_or_default();
+        let full = format!("{prefix}{new_leaf}");
+        if full == f.path {
+            return Err(format!("«{}» ya se llama así", f.path));
+        }
+        let taken = self.folders.iter().any(|o| o.id != f.id && o.path.eq_ignore_ascii_case(&full)) || self.vars.iter().any(|v| v.name.eq_ignore_ascii_case(&full));
+        if taken {
+            return Err(format!("ya hay una variable o carpeta «{full}»"));
+        }
+        self.ns_set_entry(f.name_id, new_leaf)?;
+        self.reindex()?;
+        Ok(full)
+    }
+
+    /// Referencia indirecta (`Carpeta.%s.Var`) de otra variable a la que puede apuntar `name` (una variable o, con
+    /// `folder`, cualquier cosa dentro de esa carpeta): (variable que la tiene, plantilla). Al renombrar, la plantilla,
+    /// que es texto y no un enlace, dejaría de llevar a ella.
+    pub fn indirect_hit(&self, name: &str, folder: bool) -> Option<(String, String)> {
+        let lower = name.to_lowercase();
+        let fits = |n: &str, parts: &[String]| match parts {
+            [one] => n == one,
+            [first, .., last] => n.starts_with(first.as_str()) && n.ends_with(last.as_str()) && n.len() >= first.len() + last.len(),
+            [] => false,
+        };
+        let inside: Vec<String> = if folder {
+            let pre = format!("{lower}.");
+            self.vars.iter().map(|v| v.name.to_lowercase()).filter(|n| n.starts_with(&pre)).collect()
+        } else {
+            vec![lower.clone()]
+        };
+        self.vars.iter().find_map(|v| {
+            let t = get(&v.props, prop::INDIRECT_ADDRESS).and_then(Prop::text)?;
+            let parts: Vec<String> = t.to_lowercase().split("%s").map(str::to_owned).collect();
+            // La parte fija del principio nombra la carpeta, o alguna variable de dentro (o la propia) encaja.
+            let hit = (folder && parts[0].starts_with(&format!("{lower}."))) || inside.iter().any(|n| fits(n, &parts));
+            hit.then(|| (v.name.clone(), t))
+        })
+    }
+
+    /// Cambia el texto de la entrada `id` de `NameServer` (en su sitio, con el mismo id).
+    fn ns_set_entry(&mut self, id: u32, name: &str) -> Result<(), String> {
+        let node = self.names.node_with_entry(id).ok_or_else(|| format!("el nombre {id} no está en NameServer"))?;
+        let &(_, _, pos, size) = self.names.nodes[node].entries.iter().find(|e| e.0 == id).unwrap();
+        let mut text = utf16_bytes(name);
         text.extend([0, 0]);
-        let mut entry = name_id.to_le_bytes().to_vec();
+        let mut entry = id.to_le_bytes().to_vec();
         entry.extend((text.len() as u32).to_le_bytes());
         entry.extend(text);
         self.ns.splice(pos..pos + size, entry);
         self.names = NameServer::parse(&self.ns).ok_or("NameServer quedó ilegible")?;
-        self.reindex()?;
-        Ok(full)
+        Ok(())
     }
 
     /// Borra una variable de primer nivel (con sus elementos, si es una instancia de estructura).
@@ -1289,6 +1342,20 @@ mod tests {
 
     fn find<'a>(all: &'a [VariableInfo], name: &str) -> &'a VariableInfo {
         all.iter().find(|v| v.name == name).unwrap_or_else(|| panic!("falta {name}"))
+    }
+
+    /// Las plantillas de las referencias indirectas (`MyController.%s.wComErrorCode` de `wRefComErrorCode`) frenan
+    /// renombrar lo que pueden nombrar.
+    #[test]
+    fn finds_what_indirect_references_can_reach() {
+        let Some(db) = modbus() else { return };
+        let target = db.vars.iter().find(|v| v.name.ends_with(".wComErrorCode")).unwrap().name.clone();
+        let folder = target.rsplit_once('.').unwrap().0.to_owned();
+        assert_eq!(db.indirect_hit(&target, false).map(|h| h.0).as_deref(), Some("wRefComErrorCode"));
+        assert!(db.indirect_hit(&folder, true).is_some(), "{folder}");
+        assert!(db.indirect_hit("MyController", true).is_some(), "la parte fija la nombra");
+        assert!(db.indirect_hit("MyController.Energy", true).is_none());
+        assert!(db.indirect_hit("MyController.Energy.reTotalEnergy", false).is_none());
     }
 
     /// Lectura del ejemplo Modbus de la instalación (sin Vijeo): coincide con lo que exporta Vijeo en el XML

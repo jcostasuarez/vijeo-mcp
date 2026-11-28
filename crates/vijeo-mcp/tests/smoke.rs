@@ -188,6 +188,11 @@ fn smoke_list_and_catalog() {
         // Mover a otra carpeta (que se crea) también cambia los usos.
         let (err, r) = c.call("vdz_variable_edit", json!({"path": modbus, "save_as": out, "dry_run": true, "edits": [{"op": "move", "name": "xRTCSyncDone", "to": "Mcp.Sub"}]}));
         assert!(!err && r["variables"][0]["name"] == "Mcp.Sub.xRTCSyncDone" && r["changes"][0].as_str().unwrap().contains("Actions"), "{r}");
+        // Mover una carpeta con todo lo que contiene; un placeholder ($) que quedaría sin carpetas se niega.
+        let (err, r) = c.call("vdz_variable_edit", json!({"path": modbus, "save_as": out, "dry_run": true, "edits": [{"op": "move_folder", "path": "MyController.System", "to": "Mcp"}]}));
+        assert!(!err && r["variables"].as_array().unwrap().iter().any(|v| v["name"] == "Mcp.System.xStatManMode"), "{r}");
+        let (err, msg) = c.call("vdz_variable_edit", json!({"path": modbus, "save_as": out, "dry_run": true, "edits": [{"op": "move", "name": "MyController.System.xStatManMode", "to": ""}]}));
+        assert!(err && msg.as_str().unwrap().contains("placeholder"), "{msg}");
         // Las carpetas también; la que nombra una referencia indirecta (MyController.%s.wComErrorCode) se niega.
         let (err, r) = c.call("vdz_variable_edit", json!({"path": modbus, "save_as": out, "dry_run": true, "edits": [{"op": "rename_folder", "path": "MyController.Energy", "new_name": "Energia"}]}));
         assert!(!err && r["variables"].as_array().unwrap().iter().any(|v| v["name"] == "MyController.Energia.reTotalEnergy"), "{r}");

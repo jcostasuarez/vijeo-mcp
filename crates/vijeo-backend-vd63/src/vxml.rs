@@ -237,7 +237,7 @@ fn operation(o: Node) -> String {
 
 // ---------- paneles ----------
 
-/// (contenedor, elemento, grupo con el nombre del informe de Vijeo, prefijo de `panel_list`).
+/// (contenedor, elemento, grupo con el nombre del informe de Vijeo, prefijo de `vdz_panel_list`).
 const PANEL_GROUPS: [(&str, &str, &str, Option<&str>); 3] = [
     ("BasePanels", "Panel", "Base Panels", Some("BP:")),
     ("MasterPanels", "MasterPanel", "Master Panels", None),
@@ -270,7 +270,8 @@ fn collect_panels<'a, 'i>(n: Node<'a, 'i>, tag: &str, prefix: &str, f: &mut dyn 
     for c in elements(n) {
         let Some(name) = attr(c, "Name") else { continue };
         let path = if prefix.is_empty() { name } else { format!("{prefix}\\{name}") };
-        if c.has_tag_name("Folder") {
+        // Vijeo exporta las carpetas de pantallas como `<PanelFolder>` (comprobado con `live_offline_panel_list`).
+        if c.tag_name().name().ends_with("Folder") {
             collect_panels(c, tag, &path, f);
         } else if c.has_tag_name(tag) {
             f(&path, c);
@@ -517,7 +518,7 @@ mod tests {
         <Panel Name="Start" ID="P1"><Switch Name="Switch1"><Animation Variable="Ctl.Run"/><Bit DestinationVariable="$Ctl$.Alm"/></Switch>
           <Actions><Action><Trigger TriggerType="Event" TriggerEvent="OnOpen" Description="Open"/><Script ScriptType="WindowScript">Done.write(1);</Script></Action></Actions>
         </Panel>
-        <Folder Name="Sub"><Panel Name="Two" ID="P2"/></Folder>
+        <PanelFolder Name="Sub"><Panel Name="Two" ID="P2"/></PanelFolder>
       </BasePanels>
       <MasterPanels><MasterPanel Name="Std" ID="P1000001"/></MasterPanels>
       <PopupWindows><Window Name="Pop" WindowID="W1"><Panels><Panel Name="Panel1" ID="P10001"/></Panels></Window></PopupWindows>
@@ -632,7 +633,7 @@ mod tests {
     <BasePanels>
       <Panel Name="Start" ID="P1"><Switch Name="Ir"><WhenPress><Special SpecialFunction="ChangePanel" ChangePanelID="P21"/></WhenPress></Switch>
         <Switch Name="Pop"><WhenPress><PopPanel PopupPanelAction="Open" PopupPanelID="P10001"/></WhenPress></Switch></Panel>
-      <Folder Name="Sub"><Panel Name="RFID_1" ID="P21"/></Folder>
+      <PanelFolder Name="Sub"><Panel Name="RFID_1" ID="P21"/></PanelFolder>
     </BasePanels>
     <PopupWindows><Folder Name="F"><Window Name="ComErrorCodes" WindowID="W1"><Panels><Panel Name="Panel1" ID="P10001"><Switch Name="X"><WhenPress><PopPanel PopupPanelAction="Close" PopupPanelID="P10001"/></WhenPress></Switch></Panel></Panels></Window></Folder></PopupWindows>
   </GraphicalPanels></Target></Project>"#;

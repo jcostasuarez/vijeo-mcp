@@ -17,8 +17,6 @@ pub enum Capability {
     Reports,
     /// Existencia y tipo de una variable, del XML del proyecto.
     VariableLookup,
-    /// Paneles de un target, del XML del proyecto.
-    PanelList,
     /// Catálogo de familias y modelos HMI descifrado de la instalación.
     ModelCatalog,
     /// Drivers de comunicación instalados (`HMI IO\*_PDL.dll`).
@@ -56,13 +54,12 @@ pub enum Capability {
 }
 
 impl Capability {
-    pub const ALL: [Capability; 23] = [
+    pub const ALL: [Capability; 22] = [
         Capability::ProjectLifecycle,
         Capability::TargetManage,
         Capability::Build,
         Capability::Reports,
         Capability::VariableLookup,
-        Capability::PanelList,
         Capability::ModelCatalog,
         Capability::DriverCatalog,
         Capability::ProjectConfig,
@@ -89,7 +86,6 @@ impl Capability {
             Capability::Build => "build",
             Capability::Reports => "reports",
             Capability::VariableLookup => "variable_lookup",
-            Capability::PanelList => "panel_list",
             Capability::ModelCatalog => "model_catalog",
             Capability::DriverCatalog => "driver_catalog",
             Capability::ProjectConfig => "project_config",

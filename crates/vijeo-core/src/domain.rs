@@ -229,7 +229,7 @@ pub struct PanelReport {
     pub name: String,
     /// Ruta dentro del grupo (`Carpeta\Panel`).
     pub path: String,
-    /// Ruta de `panel_list` (`BP:\...`), sólo en paneles base.
+    /// Ruta de `vdz_panel_list` (`BP:\...`), sólo en paneles base.
     pub panel_ref: Option<String>,
     pub actions: Vec<ActionInfo>,
 }
@@ -240,10 +240,34 @@ pub struct PanelRef {
     pub path: String,
 }
 
+/// Pantalla de un target leída del `.vdz` (`vdz_panel_list`).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ScreenInfo {
+    pub target: String,
+    /// `Base Panels`, `Master Panels` o `Popup Windows`.
+    pub group: String,
+    /// Ruta dentro del grupo: `Carpeta\Panel`; en las ventanas emergentes, `Ventana\Panel`.
+    pub path: String,
+    pub name: String,
+    /// PanelID: el número del Navigator (`21` de `21: RFID_1`) y el de «cambiar de panel». Los paneles de las ventanas
+    /// emergentes empiezan en 10001 y los maestros en 1000001.
+    pub number: u32,
+    /// Ruta para project_goto y las herramientas de pantallas (`BP:\Carpeta\Panel`), sólo en los paneles base.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub panel_ref: Option<String>,
+    /// Ventana emergente que lo contiene y su WindowID (`1` de `1: ComErrorCodes`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_number: Option<u32>,
+    /// Objetos de primer nivel (un grupo cuenta como uno).
+    pub objects: usize,
+}
+
 /// Panel base o ventana emergente recién creados con `panel_create`.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct CreatedPanel {
-    /// Ruta como en panel_list (`BP:\Motores`); en una ventana emergente, su nombre.
+    /// Ruta como en vdz_panel_list (`BP:\Motores`); en una ventana emergente, su nombre.
     pub path: String,
     pub name: String,
     /// PanelID que le dio Vijeo (el siguiente libre): el número de «cambiar de panel» y del Navigator (`5: Motores`). En una
@@ -1037,7 +1061,7 @@ pub struct SmartProperty {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct PanelObjectsResult {
     pub target: String,
-    /// Ruta de panel_list (`BP:\...`).
+    /// Ruta de vdz_panel_list (`BP:\...`).
     pub panel: String,
     /// Objetos contando los de dentro de los grupos.
     pub count: usize,
@@ -1116,7 +1140,7 @@ pub enum PanelEditOp {
 pub struct PanelEditRequest {
     pub project: ProjectId,
     pub target: String,
-    /// Panel base: ruta de panel_list (`BP:\Carpeta\Panel`), ruta sin `BP:\` o sólo el nombre si no se repite.
+    /// Panel base: ruta de vdz_panel_list (`BP:\Carpeta\Panel`), ruta sin `BP:\` o sólo el nombre si no se repite.
     pub panel: String,
     /// Operaciones, en orden.
     pub operations: Vec<PanelEditOp>,

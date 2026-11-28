@@ -187,6 +187,19 @@ fn smoke_list_and_catalog() {
         let (err, all) = c.call("vdz_cross_references", json!({"path": modbus}));
         assert!(!err && all["count"].as_u64().unwrap() > 100 && !all["unused"].as_array().unwrap().is_empty(), "{all}");
     }
+    // panel_list (del XML de Vijeo) se quitó: vdz_panel_list hace lo mismo sin Vijeo, con carpetas, maestros y popups.
+    if std::path::Path::new(modbus).is_file() {
+        let (err, s) = c.call("vdz_panel_list", json!({"path": modbus}));
+        assert!(!err && s["count"] == 18, "{s}");
+        let all = s["panels"].as_array().unwrap();
+        assert!(all.iter().any(|x| x["panel_ref"] == r"BP:\Energy" && x["number"] == 3), "{s}");
+        assert!(all.iter().any(|x| x["window"] == "ComErrorCodes" && x["window_number"] == 1 && x["number"] == 10001), "{s}");
+        let (err, s) = c.call("vdz_panel_list", json!({"path": modbus, "group": "master"}));
+        assert!(!err && s["count"] == 2, "{s}");
+    }
+    assert!(names.contains(&"vdz_panel_list") && !names.contains(&"panel_list"));
+    let (err, msg) = c.call("vdz_panel_list", json!({}));
+    assert!(err && msg.as_str().unwrap().contains("project/path"), "{msg}");
     // project_cross_references (del XML de Vijeo) se quitó: vdz_cross_references hace lo mismo sin Vijeo.
     assert!(names.contains(&"vdz_cross_references") && !names.contains(&"project_cross_references"));
     let (err, msg) = c.call("vdz_cross_references", json!({}));
@@ -322,8 +335,8 @@ fn live_project_roundtrip_over_mcp() {
     let p = info["id"].as_u64().unwrap();
     assert_eq!(info["targets"][0]["model"]["internal_name"], "Model_HMIGTO5310");
 
-    let (err, panels) = c.call("panel_list", json!({"project": p, "target": "HMI1"}));
-    assert!(!err, "{panels}");
+    let (err, panels) = c.call("vdz_panel_list", json!({"project": p, "target": "HMI1"}));
+    assert!(!err && panels["panels"][0]["panel_ref"] == r"BP:\Panel1", "{panels}");
     let (err, t) = c.call("target_rename", json!({"project": p, "target": "hmi1", "new_name": "Pantalla"}));
     assert!(!err && t["name"] == "Pantalla", "{t}");
     let (err, info) = c.call("project_rename", json!({"project": p, "name": "SmokeRenombrado"}));

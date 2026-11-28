@@ -135,16 +135,15 @@ pub trait TargetOps: Send + Sync {
     fn add(&self, p: ProjectId, name: &str, model: &ModelSelector) -> VijeoResult<TargetInfo>;
     fn delete(&self, p: ProjectId, target: &str) -> VijeoResult<()>;
     fn rename(&self, p: ProjectId, target: &str, new_name: &str) -> VijeoResult<TargetInfo>;
-    fn panels(&self, p: ProjectId, target: &str) -> VijeoResult<Vec<PanelRef>>;
     /// Abre el panel en la ventana de Vijeo, como al hacer doble clic en el Navigator. `panel` es la ruta de
-    /// panel_list (`BP:\Carpeta\Panel`) o la ruta sin `BP:\`.
+    /// vdz_panel_list (`BP:\Carpeta\Panel`) o la ruta sin `BP:\`.
     fn open_panel(&self, p: ProjectId, target: &str, panel: &str) -> VijeoResult<PanelRef>;
     /// Crea un panel base vacío en el target (con `name`, o el `Panel<n>` que le dé Vijeo) y lo deja abierto.
     /// Con `kind` popup, una ventana emergente nueva (`Window<n>`, con su panel dentro).
     fn create_panel(&self, p: ProjectId, target: &str, kind: PanelKind, name: Option<&str>) -> VijeoResult<CreatedPanel>;
     /// Añade un equipo de comunicación al target, en un driver que ya tiene o en uno nuevo.
     fn add_equipment(&self, req: &EquipmentAddRequest) -> VijeoResult<EquipmentAddResult>;
-    /// Renombra un panel base o una ventana emergente. `panel`: ruta de panel_list (`BP:\Carpeta\Panel`), ruta sin
+    /// Renombra un panel base o una ventana emergente. `panel`: ruta de vdz_panel_list (`BP:\Carpeta\Panel`), ruta sin
     /// `BP:\` o nombre si no hay otro igual; en los popups, el nombre (o `Carpeta\Ventana`) de la ventana.
     fn rename_panel(&self, p: ProjectId, target: &str, kind: PanelKind, panel: &str, new_name: &str) -> VijeoResult<RenamedPanel>;
     /// Borra un panel base o una ventana emergente. Con referencias a ella (acciones, panel inicial…) se niega
@@ -188,6 +187,11 @@ pub trait ConfigOps: Send + Sync {
     fn file_usage(&self, vdz: &Path, target: Option<&str>, system: bool) -> VijeoResult<VariableUsage>;
     /// Lo mismo sobre un proyecto abierto: guarda su copia de trabajo en Vijeo (sin tocar el `.vdz`) y la lee.
     fn project_usage(&self, p: ProjectId, target: Option<&str>, system: bool) -> VijeoResult<VariableUsage>;
+    /// Pantallas de un `.vdz` (paneles base con sus carpetas, maestros y ventanas emergentes), sin Vijeo: las de
+    /// `target` o, sin él, las de todos.
+    fn file_screens(&self, vdz: &Path, target: Option<&str>) -> VijeoResult<Vec<ScreenInfo>>;
+    /// Lo mismo sobre un proyecto abierto: guarda su copia de trabajo en Vijeo (sin tocar el `.vdz`) y la lee.
+    fn project_screens(&self, p: ProjectId, target: Option<&str>) -> VijeoResult<Vec<ScreenInfo>>;
     /// Crea, cambia y borra variables y carpetas directamente en un `.vdz`, sin Vijeo.
     fn edit_file_variables(&self, req: &VariablesEditRequest) -> VijeoResult<VariablesEditResult>;
 }

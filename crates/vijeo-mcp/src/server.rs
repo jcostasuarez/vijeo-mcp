@@ -32,7 +32,6 @@ const TOOL_CAPS: &[(&str, Capability)] = &[
     ("target_add", Capability::TargetManage),
     ("target_delete", Capability::TargetManage),
     ("target_rename", Capability::TargetManage),
-    ("panel_list", Capability::PanelList),
     ("project_build", Capability::Build),
     ("target_build", Capability::Build),
     ("project_messages", Capability::Build),
@@ -45,6 +44,7 @@ const TOOL_CAPS: &[(&str, Capability)] = &[
     ("action_list", Capability::Reports),
     ("variable_lookup", Capability::VariableLookup),
     ("vdz_cross_references", Capability::OfflineVariables),
+    ("vdz_panel_list", Capability::OfflineVariables),
     ("script_lint", Capability::ScriptLint),
     ("project_goto", Capability::PanelOpen),
     ("panel_create", Capability::PanelCreate),
@@ -64,7 +64,7 @@ const TOOL_CAPS: &[(&str, Capability)] = &[
 const INSTRUCTIONS: &str = "\
 Controla Vijeo-Designer (editor de pantallas HMI de Schneider Electric) a través de su interfaz, como lo haría \
 un usuario (menús, asistentes y Navigator), sin la API COM.
-Flujo: project_open (un .vdz existente) o project_new → devuelven `project` (id) → target_*/panel_list/\
+Flujo: project_open (un .vdz existente) o project_new → devuelven `project` (id) → target_*/vdz_panel_list/\
 project_build/variable_* → project_save → project_close.
 - Cada proyecto abierto es un proceso Vijeo-Frame.exe con ventana visible que trabaja sobre una copia \
 (Vijeo-Manager\\MCP_TMP_*, se borra al cerrar); abrir tarda unos 10-30 s. El .vdz sólo cambia con project_save \
@@ -92,8 +92,9 @@ MCP; después, project_build con `path`. Cada target tiene sus variables: con va
 una con su `target`) o las de `target`, y vdz_variable_edit pide `target`. Alarmas, estructuras y tipos de datos \
 todavía no. vdz_cross_references dice, también sin Vijeo (de un .vdz o de un proyecto abierto), dónde se usa cada \
 variable (pantalla y objeto, acciones, alarmas, otras variables), cuáles no se usan y qué enlaces de las pantallas \
-apuntan a variables que ya no existen.
-- panel_report, action_list, panel_list y variable_lookup leen el XML \
+apuntan a variables que ya no existen. vdz_panel_list lista, también sin Vijeo, las pantallas (paneles base con sus \
+carpetas, maestros y ventanas emergentes) con su número y su `panel_ref` para project_goto y las de pantallas.
+- panel_report, action_list y variable_lookup leen el XML \
 del proyecto (Export Project, unos segundos la primera vez; se reutiliza mientras el proyecto no cambie). \
 Necesitan SupportsXMLImportExport=1 en el registro de Vijeo.
 - project_export_xml escribe el XML completo del proyecto (.vxml, public.xsd: pantallas, objetos, animaciones, \
@@ -404,7 +405,7 @@ pub struct ScriptLintParams {
 pub struct GotoParams {
     pub project: u32,
     pub target: String,
-    /// Panel base: ruta de panel_list (`BP:\Carpeta\Panel`), ruta sin `BP:\` o sólo el nombre si no se repite.
+    /// Panel base: ruta de vdz_panel_list (`BP:\Carpeta\Panel`), ruta sin `BP:\` o sólo el nombre si no se repite.
     pub panel: String,
 }
 
@@ -428,7 +429,7 @@ pub struct PanelRenameParams {
     /// `base` (por defecto) o `popup` (ventana emergente).
     #[serde(default)]
     pub kind: PanelKind,
-    /// Panel base: ruta de panel_list (`BP:\Carpeta\Panel`), ruta sin `BP:\` o el nombre si no se repite. Popup: nombre
+    /// Panel base: ruta de vdz_panel_list (`BP:\Carpeta\Panel`), ruta sin `BP:\` o el nombre si no se repite. Popup: nombre
     /// de la ventana (o `Carpeta\Ventana`).
     pub panel: String,
     /// Nombre nuevo: una letra y luego letras, dígitos o `_` (la convención de Vijeo).
@@ -521,8 +522,25 @@ pub struct DeletedOut {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-pub struct PanelsOut {
-    pub panels: Vec<PanelRef>,
+pub struct ScreensOut {
+    pub count: usize,
+    pub panels: Vec<ScreenInfo>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct VdzPanelListParams {
+    /// Ruta absoluta del .vdz (sólo se lee; no hace falta abrirlo en Vijeo). Indica `path` o `project`.
+    #[serde(default)]
+    pub path: Option<PathBuf>,
+    /// Proyecto abierto en el MCP: se lee como está ahora en Vijeo, aunque no se haya guardado en el .vdz.
+    #[serde(default)]
+    pub project: Option<u32>,
+    /// Sólo este target (por defecto, todos).
+    #[serde(default)]
+    pub target: Option<String>,
+    /// Sólo un grupo: `base`, `master` o `popup`.
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -813,10 +831,28 @@ impl VijeoServer {
         self.blocking(move |b| ops(b.targets(), Capability::TargetManage, b)?.rename(ProjectId(p.project), &p.target, &p.new_name)).await
     }
 
-    /// Paneles de un target (rutas BP:\Panel o BP:\Carpeta\Panel).
+    /// Pantallas leídas directamente del proyecto (en un instante, sin el XML de Vijeo): de un .vdz sin abrirlo (`path`)
+    /// o de un proyecto abierto (`project`, con lo que tenga sin guardar). Paneles base con sus carpetas (`panel_ref`
+    /// `BP:\Carpeta\Panel`, la ruta de project_goto y de las herramientas de pantallas), paneles maestros y ventanas
+    /// emergentes, cada uno con su número (PanelID; WindowID de la ventana) y su nº de objetos. Lo mismo que el XML de
+    /// Vijeo (comprobado en los ejemplos).
     #[tool(annotations(read_only_hint = true, open_world_hint = false))]
-    async fn panel_list(&self, Parameters(p): Parameters<TargetParam>) -> ToolResult<PanelsOut> {
-        self.blocking(move |b| Ok(PanelsOut { panels: ops(b.targets(), Capability::PanelList, b)?.panels(ProjectId(p.project), &p.target)? })).await
+    async fn vdz_panel_list(&self, Parameters(p): Parameters<VdzPanelListParams>) -> ToolResult<ScreensOut> {
+        self.blocking(move |b| {
+            let cfg = ops(b.config(), Capability::OfflineVariables, b)?;
+            let all = match (p.project, &p.path) {
+                (Some(id), None) => cfg.project_screens(ProjectId(id), p.target.as_deref())?,
+                (None, Some(path)) => cfg.file_screens(path, p.target.as_deref())?,
+                _ => return Err(VijeoError::invalid("project/path", "indica exactamente uno de los dos")),
+            };
+            let group = p.group.as_deref().map(str::to_lowercase);
+            let panels: Vec<ScreenInfo> = all
+                .into_iter()
+                .filter(|s| group.as_deref().is_none_or(|g| s.group.to_lowercase().starts_with(g) || s.group.to_lowercase().contains(g)))
+                .collect();
+            Ok(ScreensOut { count: panels.len(), panels })
+        })
+        .await
     }
 
     /// Compila todo el proyecto (abierto o un .vdz por ruta). Devuelve nº de errores y warnings y el texto de cada uno (ventana de salida de Vijeo).

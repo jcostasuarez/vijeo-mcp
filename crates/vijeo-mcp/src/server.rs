@@ -41,7 +41,6 @@ const TOOL_CAPS: &[(&str, Capability)] = &[
     ("vdz_variable_list", Capability::OfflineVariables),
     ("vdz_variable_edit", Capability::OfflineVariables),
     ("project_export_xml", Capability::Reports),
-    ("variable_list", Capability::Reports),
     ("panel_report", Capability::Reports),
     ("action_list", Capability::Reports),
     ("variable_lookup", Capability::VariableLookup),
@@ -85,12 +84,14 @@ se comprobó creando el target en esta instalación); project_new exige el prime
 puerto y unit ID (Modbus TCP) de sus equipos. No escribe sobre proyectos abiertos: project_save + project_close \
 antes, y project_build con `path` después para comprobarlo. La puerta de enlace tiene que ser de la red que Vijeo \
 valida (en los modelos con `dual_ethernet`, la de la ETH2, que no se cambia).
-- Variables sin abrir Vijeo (modo rápido, en un instante): vdz_variable_list las lee de un .vdz y vdz_variable_edit \
-crea, cambia y borra variables y carpetas en él (internas y externas, con dirección, grupo de escaneo, valor inicial, \
-descripción). Para cambios de variables es lo preferible a abrir el proyecto e importar un CSV. Como target_config_set, \
-no escribe sobre proyectos abiertos en el MCP; después, project_build con `path`. Sólo proyectos de un target; \
-alarmas, estructuras y tipos de datos todavía no.
-- variable_list, panel_report, action_list, panel_list, variable_lookup y project_cross_references leen el XML \
+- Variables sin abrir Vijeo (modo rápido, en un instante): vdz_variable_list las lee de un .vdz (o de un proyecto \
+abierto con `project`, incluido lo no guardado) y vdz_variable_edit crea, cambia y borra variables y carpetas en un \
+.vdz (internas y externas, con dirección, grupo de escaneo, valor inicial, descripción). Para cambios de variables es \
+lo preferible a abrir el proyecto e importar un CSV. Como target_config_set, no escribe sobre proyectos abiertos en el \
+MCP; después, project_build con `path`. Cada target tiene sus variables: con varios, vdz_variable_list da todas (cada \
+una con su `target`) o las de `target`, y vdz_variable_edit pide `target`. Alarmas, estructuras y tipos de datos \
+todavía no.
+- panel_report, action_list, panel_list, variable_lookup y project_cross_references leen el XML \
 del proyecto (Export Project, unos segundos la primera vez; se reutiliza mientras el proyecto no cambie). \
 Necesitan SupportsXMLImportExport=1 en el registro de Vijeo.
 - project_export_xml escribe el XML completo del proyecto (.vxml, public.xsd: pantallas, objetos, animaciones, \
@@ -103,8 +104,7 @@ nuevo queda con su configuración por defecto. Luego project_save.
 deja abierto, o con kind=popup una ventana emergente nueva (con su panel dentro); luego panel_insert le pone objetos \
 (un botón con open_popup abre la ventana). panel_rename renombra un panel base o una ventana emergente \
 (kind=popup; su número no cambia y las acciones siguen valiendo); panel_delete la borra, negándose si alguna \
-acción, el panel inicial u otra propiedad la usa (lista dónde; con force la borra igual). Como project_goto, no \
-funcionan tras un project_build en la misma instancia.
+acción, el panel inicial u otra propiedad la usa (lista dónde; con force la borra igual).
 - Pantallas (paneles base de un proyecto abierto), con el portapapeles de Vijeo como Copiar/Pegar: panel_objects \
 lista los objetos (ruta Grupo/Objeto, tipo, posición absoluta, textos y variables; de los smart objects, sus \
 propiedades); panel_edit renombra, mueve, redimensiona, cambia textos, sustituye variables (Vijeo las vuelve a \
@@ -116,17 +116,15 @@ numéricos y de texto, textos, rectángulos, elipses y líneas, con animaciones 
 y posición) o añade piezas de la Toolchest (toolchest_list, sin Vijeo; los smart objects —fecha, hora…— con sus \
 `properties`) u objetos copiados de otro panel. Las variables tienen que existir en el target (se comprueban en el \
 XML). Usan el portapapeles de Windows: el texto que tuviera se devuelve al terminar, el resto se pierde. Después: \
-project_build para comprobar (un smart object sin sus variables da el error 4336) y project_save. Como \
-project_goto, no funcionan tras un project_build en la misma instancia.
+project_build para comprobar (un smart object sin sus variables da el error 4336) y project_save.
 - script_lint revisa los scripts del proyecto (o un texto con `script`, antes de pegarlo en Vijeo) con el \
 compilador de scripts de Vijeo y reglas propias: sintaxis y tipos con línea y columna, variables inexistentes o con \
 otras mayúsculas, métodos. Un script que usa objetos que el MCP aún no describe al compilador (ventanas emergentes, \
 sonidos, recetas, campos de Sys…) sale con `compiles` ausente y `compiler_note`: ese sólo pasa las reglas propias. \
-project_build no compila las fuentes de los scripts de acción, así que no los valida. project_goto abre un panel base en la ventana de Vijeo; \
-tras un project_build en la misma instancia Vijeo deja de atender el Navigator: úsalo antes de compilar o \
-guarda, cierra y vuelve a abrir. Lo mismo vale para variables_import, que importa en un target abierto un CSV \
-de variables (de variables_generate_csv o de Export Variables) o directamente una lista de ariables (como en \
-variables_generate_csv), sin reemplazar las que ya existen salvo con replace_existing; luego project_save.
+project_build no compila las fuentes de los scripts de acción, así que no los valida. project_goto abre un panel base en la ventana de Vijeo. \
+variables_import importa en un target abierto un CSV de variables (de variables_generate_csv o de Export \
+Variables) o directamente una lista de variables (como en variables_generate_csv), sin reemplazar las que ya existen \
+salvo con replace_existing; luego project_save.
 - Sin abrir Vijeo: xml_validate valida un .vxml contra el public.xsd de la instalación (los exports de Vijeo \
 tampoco validan del todo: compara con uno); variables_generate_csv escribe un CSV para Variables › Import \
 Variables (verificado importándolo en Vijeo; rechaza las palabras reservadas, que harían fallar la importación \
@@ -281,26 +279,16 @@ pub struct ExportXmlParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct VariableListParams {
-    pub project: u32,
-    /// Sólo este target (por defecto, todos).
+pub struct VdzVariableListParams {
+    /// Ruta absoluta del .vdz (sólo se lee; no hace falta abrirlo en Vijeo). Indica `path` o `project`.
+    #[serde(default)]
+    pub path: Option<PathBuf>,
+    /// Proyecto abierto en el MCP: se leen sus variables como están ahora en Vijeo, aunque no se hayan guardado en el .vdz.
+    #[serde(default)]
+    pub project: Option<u32>,
+    /// Sólo este target (por defecto, todos; cada variable dice el suyo).
     #[serde(default)]
     pub target: Option<String>,
-    /// Texto a buscar en nombre o descripción (sin distinguir mayúsculas).
-    #[serde(default)]
-    pub text: Option<String>,
-    /// Internal / External.
-    #[serde(default)]
-    pub source: Option<String>,
-    /// Incluir las variables de sistema (las que empiezan por «_»).
-    #[serde(default)]
-    pub include_system: bool,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct VdzVariableListParams {
-    /// Ruta absoluta del .vdz (sólo se lee; no hace falta abrirlo en Vijeo).
-    pub path: PathBuf,
     /// Texto a buscar en nombre o descripción (sin distinguir mayúsculas).
     #[serde(default)]
     pub text: Option<String>,
@@ -310,6 +298,9 @@ pub struct VdzVariableListParams {
     /// Incluir los miembros de las variables estructuradas (`Instancia.Miembro`).
     #[serde(default)]
     pub include_elements: bool,
+    /// Incluir las variables de sistema (las que empiezan por «_»).
+    #[serde(default)]
+    pub include_system: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -871,36 +862,22 @@ impl VijeoServer {
         self.blocking(move |b| ops(b.reports(), Capability::Reports, b)?.export_xml(ProjectId(p.project), &p.dir, p.overwrite)).await
     }
 
-    /// Variables del proyecto (nombre completo con carpetas, tipo, origen, dirección, descripción), leídas del XML del proyecto.
-    #[tool(annotations(read_only_hint = true, open_world_hint = false))]
-    async fn variable_list(&self, Parameters(p): Parameters<VariableListParams>) -> ToolResult<VariablesOut> {
-        self.blocking(move |b| {
-            let text = p.text.as_deref().map(str::to_lowercase);
-            let variables: Vec<VariableInfo> = ops(b.reports(), Capability::Reports, b)?
-                .variables(ProjectId(p.project), p.target.as_deref())?
-                .into_iter()
-                .filter(|v| p.include_system || !v.name.starts_with('_'))
-                .filter(|v| p.source.as_deref().is_none_or(|s| v.source.eq_ignore_ascii_case(s)))
-                .filter(|v| {
-                    text.as_deref().is_none_or(|t| {
-                        v.name.to_lowercase().contains(t) || v.description.as_deref().is_some_and(|d| d.to_lowercase().contains(t))
-                    })
-                })
-                .collect();
-            Ok(VariablesOut { count: variables.len(), variables })
-        })
-        .await
-    }
-
-    /// Variables de un .vdz leídas directamente de su base de variables, sin abrir Vijeo (en un instante): nombre con
-    /// carpetas, tipo, origen, dirección, descripción y, en `extra`, grupo de escaneo, valor inicial, bytes de las STRING,
-    /// grupos de alarma y registro. Lo mismo que exporta Vijeo en el XML (comprobado variable por variable).
+    /// Variables leídas directamente de la base de variables (en un instante, sin el XML de Vijeo): de un .vdz sin
+    /// abrirlo (`path`) o de un proyecto abierto (`project`, con lo que tenga sin guardar). Nombre con carpetas, target,
+    /// tipo, origen, dirección, descripción y, en `extra`, grupo de escaneo, valor inicial, bytes de las STRING, grupos de
+    /// alarma y registro. Lo mismo que exporta Vijeo en el XML (comprobado variable por variable).
     #[tool(annotations(read_only_hint = true, open_world_hint = false))]
     async fn vdz_variable_list(&self, Parameters(p): Parameters<VdzVariableListParams>) -> ToolResult<VariablesOut> {
         self.blocking(move |b| {
             let text = p.text.as_deref().map(str::to_lowercase);
-            let variables: Vec<VariableInfo> = ops(b.config(), Capability::OfflineVariables, b)?
-                .file_variables(&p.path, p.include_elements)?
+            let cfg = ops(b.config(), Capability::OfflineVariables, b)?;
+            let (target, elements, system) = (p.target.as_deref(), p.include_elements, p.include_system);
+            let all = match (p.project, &p.path) {
+                (Some(id), None) => cfg.project_variables(ProjectId(id), target, elements, system)?,
+                (None, Some(path)) => cfg.file_variables(path, target, elements, system)?,
+                _ => return Err(VijeoError::invalid("project/path", "indica exactamente uno de los dos")),
+            };
+            let variables: Vec<VariableInfo> = all
                 .into_iter()
                 .filter(|v| p.source.as_deref().is_none_or(|s| v.source.eq_ignore_ascii_case(s)))
                 .filter(|v| {
@@ -1037,7 +1014,7 @@ impl VijeoServer {
     /// Importa variables en un target del proyecto abierto con Variables › Import Variables: un CSV (`csv`, de
     /// variables_generate_csv o de Export Variables) o la lista `variables` (como en variables_generate_csv, se genera
     /// el CSV). Las que ya existen se conservan salvo con `replace_existing`. Devuelve lo que dice Vijeo; el .vdz no
-    /// cambia hasta project_save. Tras un project_build en la misma instancia no funciona (guarda, cierra y reabre).
+    /// cambia hasta project_save.
     #[tool(annotations(destructive_hint = true, idempotent_hint = false, open_world_hint = false))]
     async fn variables_import(&self, Parameters(p): Parameters<VariableImportRequest>) -> ToolResult<VariableImportResult> {
         self.blocking(move |b| ops(b.variables(), Capability::VariableImport, b)?.import_csv(&p)).await

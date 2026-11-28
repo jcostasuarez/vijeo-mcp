@@ -38,7 +38,7 @@ Qué modelos se pueden crear: la regla del catálogo supone la licencia estánda
 ## Requisitos
 
 - Vijeo-Designer 6.3 instalado, con su catálogo de modelos (`TargetInfo`) y sus drivers (`HMI IO`).
-- Para las lecturas del XML (`project_export_xml`, `variable_list`, `variable_lookup`, `panel_list`, `panel_report`, `action_list` y `project_cross_references`): `HKLM\SOFTWARE\WOW6432Node\Schneider Electric\Vijeo-Designer63\Vijeo-Frame\Options\SupportsXMLImportExport` = 1 (DWORD). Sin esa clave, Vijeo no ofrece el formato `.vxml` en Export Project y la herramienta devuelve `unsupported`, indicando la clave que falta.
+- Para las lecturas del XML (`project_export_xml`, `variable_lookup`, `panel_list`, `panel_report`, `action_list` y `project_cross_references`): `HKLM\SOFTWARE\WOW6432Node\Schneider Electric\Vijeo-Designer63\Vijeo-Frame\Options\SupportsXMLImportExport` = 1 (DWORD). Sin esa clave, Vijeo no ofrece el formato `.vxml` en Export Project y la herramienta devuelve `unsupported`, indicando la clave que falta.
 
 ## Herramientas
 
@@ -57,10 +57,10 @@ Qué modelos se pueden crear: la regla del catálogo supone la licencia estánda
 | `project_messages` | Contenido actual de la Feedback Zone de un proyecto abierto |
 | `target_config` | Drivers, equipos (IP, puerto, Unit ID, parámetros) y propiedades de descarga de cada target, de un proyecto abierto (su copia de trabajo) o de cualquier `.vdz` sin abrir Vijeo |
 | `target_config_set` | Cambia en un `.vdz`, sin abrir Vijeo, la IP, la máscara y la puerta de enlace de descarga del HMI, y la IP, el puerto y el Unit ID de los equipos (puerto y Unit ID sólo en Modbus TCP). Reescribe `path` o, con `save_as`, escribe otro `.vdz`; `dry_run` sólo calcula los cambios. Rechaza un destino abierto con `project_open` |
-| `vdz_variable_list` | Sin Vijeo y en un instante: variables de un `.vdz` leídas de su base de variables (tipo, origen, dirección, descripción, grupo de escaneo, valor inicial, bytes de las STRING), lo mismo que exporta Vijeo en el XML |
-| `vdz_variable_edit` | Sin Vijeo y en menos de un segundo: crea, cambia y borra variables (internas y externas) y carpetas en un `.vdz`. Se niega a borrar una variable que usan pantallas, acciones o scripts, salvo con `force`. Reescribe `path` o escribe `save_as`; `dry_run` sólo comprueba. Sólo proyectos de un target; alarmas, estructuras y tipos de datos todavía no |
+| `vdz_variable_list` | En un instante y sin el XML: variables de un `.vdz` sin abrir Vijeo (`path`) o de un proyecto abierto (`project`, con lo no guardado), leídas de su base de variables (target, tipo, origen, dirección, descripción, grupo de escaneo, valor inicial, bytes de las STRING; con `include_system`, también las del sistema), lo mismo que exporta Vijeo en el XML. Con varios targets, todas (cada una con el suyo) o las de `target` |
+| `vdz_variable_edit` | Sin Vijeo y en menos de un segundo: crea, cambia y borra variables (internas y externas) y carpetas en un `.vdz`. Se niega a borrar una variable que usan pantallas, acciones o scripts, salvo con `force`. Reescribe `path` o escribe `save_as`; `dry_run` sólo comprueba. Con varios targets, `target` dice cuál (cada uno tiene sus variables); alarmas, estructuras y tipos de datos todavía no |
 | `project_export_xml` | Export Project: escribe `<dir>\<proyecto>.vxml` (public.xsd) y la carpeta `<dir>\<proyecto>\` con las imágenes |
-| `variable_list`, `variable_lookup`, `project_cross_references` | Variables (nombre completo, tipo, origen, dirección, descripción), existencia de una variable y referencias cruzadas (dónde se usa cada una y cuáles no se usan), leídas del `.vxml` |
+| `variable_lookup`, `project_cross_references` | Existencia de una variable y referencias cruzadas (dónde se usa cada una y cuáles no se usan), leídas del `.vxml` |
 | `panel_report`, `action_list` | Paneles con sus acciones de panel, y acciones globales (disparador, enclavamiento, script u operaciones), del `.vxml` |
 | `script_lint` | Revisa los scripts del proyecto (o un texto suelto) con el compilador de scripts de Vijeo (`ScriptEngine.dll`: sintaxis y tipos con línea y columna) y contra sus variables y la API de scripts: variables que no existen, mayúsculas, métodos. Los que usan objetos que el MCP aún no describe al compilador salen como «sin comprobar» |
 | `project_goto` | Abre un panel base en la ventana de Vijeo del proyecto (Navigator) |
@@ -76,8 +76,6 @@ Qué modelos se pueden crear: la regla del catálogo supone la licencia estánda
 | `panel_edit` | Edita los objetos de un panel base: renombrar, mover, redimensionar, cambiar un texto, sustituir texto o variables dentro de las cadenas, borrar, poner o quitar animaciones, cambiar las acciones de un botón y los colores. `dry_run` sólo devuelve cómo quedaría |
 | `panel_insert` | Crea objetos desde cero (botones con acciones —bits, palabras, scripts compilados con el compilador de Vijeo, cambiar de panel, abrir y cerrar ventanas emergentes—, lámparas, displays numéricos y de texto, textos, rectángulos, elipses y líneas, con animaciones de visibilidad, parpadeo, color, relleno y posición) o añade piezas de la Toolchest u objetos copiados de otro panel, en la posición indicada, con otro nombre y sustituciones de texto o variables |
 | `toolchest_list` | Sin Vijeo: bibliotecas de la Toolchest de la instalación y, con filtro, sus piezas (id para `panel_insert`, tipos y tamaño) |
-
-`project_goto`, `panel_create`, `panel_rename`, `panel_delete`, `equipment_add`, `variables_import` y las tres herramientas de objetos de panel no funcionan después de un `project_build` en la misma instancia (Vijeo deja de atender el Navigator): úsalos antes de compilar, o guarda, cierra y vuelve a abrir.
 
 Las herramientas de objetos trabajan como Copiar y Pegar en el editor del panel, con el portapapeles de Windows (inventario §13.2):
 - `panel_edit` comprueba las operaciones sobre una copia; luego corta todos los objetos del panel, los edita y los pega. Al final compara lo que quedó con lo esperado; si el panel quedara vacío, vuelve a pegar el original.

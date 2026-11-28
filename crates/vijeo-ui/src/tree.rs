@@ -14,7 +14,7 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_DELETE, VK_RETURN};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetDlgCtrlID, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, SendMessageTimeoutW, SMTO_ABORTIFHUNG, SMTO_BLOCK, WM_KEYDOWN, WM_KEYUP, WM_SETTEXT,
+    GetAncestor, GetDlgCtrlID, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, GA_ROOT, SendMessageTimeoutW, SMTO_ABORTIFHUNG, SMTO_BLOCK, WM_KEYDOWN, WM_KEYUP, WM_SETTEXT,
 };
 
 use crate::dialog::{class_of, descendants_of, top_windows_of};
@@ -196,10 +196,19 @@ impl RemoteTree {
 
     /// Selecciona `item` y da el foco al árbol, como al hacer clic en él: los comandos de menú que dependen de
     /// lo seleccionado en el Navigator (Import Variables) sólo están activos con el foco ahí.
+    ///
+    /// Antes, `WM_MOUSEACTIVATE` como en un clic real (sube por los padres): así el Navigator pasa a ser el panel
+    /// activo del marco. Sin eso, en cuanto Vijeo activa otro panel (la Feedback Zone al importar variables o al
+    /// compilar), MFC da por deshabilitados los comandos del Navigator y descarta el `WM_COMMAND` (visto en vivo).
     pub fn focus(&self, item: TreeItem) -> bool {
         if !self.select(item) {
             return false;
         }
+        const WM_MOUSEACTIVATE: u32 = 0x0021;
+        const WM_LBUTTONDOWN: isize = 0x0201;
+        const HTCLIENT: isize = 1;
+        let root = unsafe { GetAncestor(self.h(), GA_ROOT) };
+        let _ = send(self.h(), WM_MOUSEACTIVATE, root.0 as usize, HTCLIENT | (WM_LBUTTONDOWN << 16));
         let theirs = unsafe { GetWindowThreadProcessId(self.h(), None) };
         let mine = unsafe { GetCurrentThreadId() };
         if theirs == 0 || !unsafe { AttachThreadInput(mine, theirs, true) }.as_bool() {

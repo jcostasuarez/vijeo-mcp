@@ -90,10 +90,6 @@ const BASE_PANELS_NODE: [&str; 1] = ["Base Panels"];
 const POPUP_WINDOWS_NODE: &str = "Popup Windows";
 /// Lo que puede tardar el Navigator en llenarse tras abrir un proyecto.
 const NAVIGATOR_FILL: Duration = Duration::from_secs(15);
-/// Tras un Build All, Vijeo deja de atender el Navigator (Intro) e Import Variables en esa instancia
-/// (verificado con el ejemplo Modbus; la causa no se conoce).
-const AFTER_BUILD_HINT: &str = ". Esta instancia ya compiló el proyecto y, tras un Build All, Vijeo deja de atender el Navigator: \
-guarda con project_save, ciérralo con project_close y vuelve a abrirlo";
 /// Lo que puede tardar el editor en mostrar un panel tras abrirlo en el Navigator.
 const OPEN_PANEL_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -205,8 +201,6 @@ pub struct UiProject {
     unknown_since: Option<Instant>,
     /// Lo que respondió el MCP en los diálogos conocidos, sin repetir.
     notes: Vec<String>,
-    /// Ya se hizo un Build All en esta instancia (ver [`AFTER_BUILD_HINT`]).
-    built: bool,
 }
 
 impl UiProject {
@@ -249,7 +243,7 @@ impl UiProject {
     }
 
     fn new(ui: UiInstance, workspace: &Path, temp: &str, t: Timeouts) -> Self {
-        Self { ui, temp: temp.to_owned(), workspace: workspace.to_path_buf(), t, unknown_since: None, notes: Vec::new(), built: false }
+        Self { ui, temp: temp.to_owned(), workspace: workspace.to_path_buf(), t, unknown_since: None, notes: Vec::new() }
     }
 
     pub fn pid(&self) -> u32 {
@@ -419,7 +413,6 @@ impl UiProject {
         let pid = self.pid();
         let before = feedback_lines(pid).unwrap_or_default();
         self.command(CMD_BUILD_ALL)?;
-        self.built = true;
         let mut last: Option<(Vec<String>, Instant)> = None;
         // Vijeo vacía la salida al empezar: recompilar sin cambios acaba con las mismas líneas que antes.
         let mut started = false;
@@ -601,18 +594,11 @@ impl UiProject {
 
     /// Import Variables (`0xC419`) de un CSV delimitado por comas en el target y guarda. Devuelve lo que
     /// Vijeo escribió en la ventana de salida (`14 variables were imported.`, `Import complete.`).
-    ///
-    /// Tras un Build All en la misma instancia Vijeo deja de atender el comando (y el Intro del Navigator):
-    /// el diálogo no se abre y esto acaba en `timeout` (verificado; la causa no se conoce).
     pub fn import_variables(&mut self, target: &str, csv: &Path, overwrite: bool) -> VijeoResult<String> {
         self.select_target_node(target, "Variables")?;
         self.command(CMD_IMPORT_VARIABLES)?;
         let is_import = |d: &UiDialog| d.has_control(FILE_NAME) && d.has_control(IMPORT_DELIMITER);
-        let built = self.built;
-        let d = self.wait_dialog("Import Variables", is_import).map_err(|e| match e {
-            VijeoError::Timeout { op, ms } if built => VijeoError::Timeout { op: format!("{op}{AFTER_BUILD_HINT}"), ms },
-            e => e,
-        })?;
+        let d = self.wait_dialog("Import Variables", is_import)?;
         let types = d.combo_items(FILE_TYPE);
         let csv_type = types.iter().position(|t| t.to_ascii_lowercase().contains("*.csv"));
         let delimiter = d.combo_items(IMPORT_DELIMITER).iter().position(|t| t.contains("Comma"));
@@ -693,17 +679,12 @@ impl UiProject {
             return Err(VijeoError::Internal(format!("no se pudo seleccionar «{target} › {group}» en el Navigator")));
         }
         std::thread::sleep(Duration::from_millis(300));
-        let built = self.built;
         self.sync_command("crear el panel", if popup { CMD_INSERT } else { CMD_NEW_PANEL })?;
         let (item, label) = self
             .wait_until("crear el panel", self.t.call, |p| {
                 let tree = p.tree().ok()?;
                 tree.expand(bp);
                 tree.children(bp).into_iter().find(|c| !before.contains(c)).and_then(|c| tree.text(c).map(|t| (c, t)))
-            })
-            .map_err(|e| match e {
-                VijeoError::Timeout { op, ms } if built => VijeoError::Timeout { op: format!("{op}{AFTER_BUILD_HINT}"), ms },
-                e => e,
             })?;
         let (id, created) = parse_panel_label(&label).ok_or_else(|| VijeoError::Internal(format!("etiqueta de panel no reconocida en el Navigator: «{label}»")))?;
         let mut got = created.clone();
@@ -756,7 +737,7 @@ impl UiProject {
     /// Renombra un panel base o una ventana emergente editando su etiqueta en el Navigator (F2, como
     /// [`Self::new_panel`]); un aviso de Vijeo es un error con su texto. El número (`21: `) no cambia. Guarda.
     pub fn rename_screen(&mut self, target: &str, popup: bool, path: &str, new: &str) -> VijeoResult<String> {
-        let item = self.screen_item(target, popup, path).map_err(|e| self.after_build(e))?;
+        let item = self.screen_item(target, popup, path)?;
         let tree = self.tree()?;
         let ok = tree.rename(item, new);
         std::thread::sleep(Duration::from_millis(800));
@@ -767,8 +748,7 @@ impl UiProject {
         }
         let got = tree.text(item).and_then(|l| parse_panel_label(&l)).map(|(_, n)| n).unwrap_or_default();
         if !ok || got != new {
-            let hint = if self.built { AFTER_BUILD_HINT } else { "" };
-            return Err(VijeoError::Internal(format!("Vijeo dejó el nombre «{got}» en vez de «{new}»{hint}")));
+            return Err(VijeoError::Internal(format!("Vijeo dejó el nombre «{got}» en vez de «{new}»")));
         }
         self.save()?;
         Ok(got)
@@ -777,19 +757,10 @@ impl UiProject {
     /// Borra un panel base o una ventana emergente (con sus paneles): Supr en el Navigator y Yes en «Delete
     /// Panel» / «Delete Popup Window» (`You are about to delete [21 : RFID_1]`). Guarda.
     pub fn delete_screen(&mut self, target: &str, popup: bool, path: &str) -> VijeoResult<()> {
-        let item = self.screen_item(target, popup, path).map_err(|e| self.after_build(e))?;
+        let item = self.screen_item(target, popup, path)?;
         let name = path.rsplit('\\').next().unwrap_or(path).to_owned();
-        self.delete_panel_item(item, &name).map_err(|e| self.after_build(e))?;
+        self.delete_panel_item(item, &name)?;
         self.save()
-    }
-
-    /// Añade a un timeout la pista de que, tras un Build All, Vijeo deja de atender el Navigator.
-    fn after_build(&self, e: VijeoError) -> VijeoError {
-        match e {
-            VijeoError::Timeout { op, ms } if self.built => VijeoError::Timeout { op: format!("{op}{AFTER_BUILD_HINT}"), ms },
-            VijeoError::Internal(m) if self.built && !m.contains(AFTER_BUILD_HINT) => VijeoError::Internal(format!("{m}{AFTER_BUILD_HINT}")),
-            e => e,
-        }
     }
 
     /// Borra un panel del Navigator: Supr y Yes en la confirmación que nombra el panel.
@@ -881,11 +852,6 @@ impl UiProject {
             .find(|&c| tree.text(c).is_some_and(|t| t.eq_ignore_ascii_case(IO_MANAGER_NODE)))
             .ok_or_else(|| VijeoError::Internal(format!("no se encontró «{IO_MANAGER_NODE}» bajo «{target}» en el Navigator")))?;
         tree.expand(io);
-        let built = self.built;
-        let hint = move |e: VijeoError| match e {
-            VijeoError::Timeout { op, ms } if built => VijeoError::Timeout { op: format!("{op}{AFTER_BUILD_HINT}"), ms },
-            e => e,
-        };
         // Vijeo puede abrir él mismo «Equipment Configuration» del equipo nuevo (verificado al añadir un equipo a
         // ModbusTCP): se rellena ahí. Un error de esa configuración se devuelve después de encontrar los nodos, para
         // poder borrar lo creado.
@@ -905,7 +871,7 @@ impl UiProject {
                 }
                 std::thread::sleep(Duration::from_millis(300));
                 self.command(CMD_INSERT)?;
-                let dlg = self.wait_dialog("Equipment Selection", |d| d.has_control(EQUIPMENT_LIST) && !d.has_control(NEW_DRIVER_MANUFACTURER)).map_err(hint)?;
+                let dlg = self.wait_dialog("Equipment Selection", |d| d.has_control(EQUIPMENT_LIST) && !d.has_control(NEW_DRIVER_MANUFACTURER))?;
                 choose_equipment(&dlg, spec)?;
                 pending = self.auto_equipment_config("añadir el equipo", spec, &mut configured)?;
                 let eq = self.wait_until("añadir el equipo", self.t.call, |p| {
@@ -922,7 +888,7 @@ impl UiProject {
                 }
                 std::thread::sleep(Duration::from_millis(300));
                 self.command(CMD_INSERT)?;
-                let dlg = self.wait_dialog("New Driver", |d| d.has_control(NEW_DRIVER_MANUFACTURER) && d.has_control(NEW_DRIVER_LIST)).map_err(hint)?;
+                let dlg = self.wait_dialog("New Driver", |d| d.has_control(NEW_DRIVER_MANUFACTURER) && d.has_control(NEW_DRIVER_LIST))?;
                 let cancel = |d: &UiDialog, e: VijeoError| {
                     let _ = d.click(IDCANCEL);
                     e
@@ -1173,10 +1139,7 @@ impl UiProject {
         }
         let r = self.wait_until("abrir el panel", OPEN_PANEL_TIMEOUT, |p| shown(p).then_some(()));
         r.map_err(|e| match e {
-            VijeoError::Timeout { .. } => {
-                let hint = if self.built { AFTER_BUILD_HINT } else { "" };
-                VijeoError::Internal(format!("Vijeo no abrió «{path}» (título de la ventana: {:?}){hint}", self.ui.title().unwrap_or_default()))
-            }
+            VijeoError::Timeout { .. } => VijeoError::Internal(format!("Vijeo no abrió «{path}» (título de la ventana: {:?})", self.ui.title().unwrap_or_default())),
             e => e,
         })
     }

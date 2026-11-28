@@ -1181,6 +1181,59 @@ impl TagDb {
         })
     }
 
+    /// Mueve una variable de primer nivel a la carpeta `to` (`""` = la raíz; las carpetas que falten se crean), con el
+    /// mismo nombre y el mismo id: su carpeta padre (prop `0x51`) y su entrada de `NameServer`, que pasa al nodo de la
+    /// carpeta nueva. Devuelve el nombre completo nuevo.
+    pub fn move_variable(&mut self, name: &str, to: &str) -> Result<String, String> {
+        let v = self.find_var(name.trim()).cloned().ok_or_else(|| format!("no hay ninguna variable «{}» (los elementos de una estructura no se mueven)", name.trim()))?;
+        let to = to.trim().trim_matches('.');
+        let leaf = v.name.rsplit('.').next().unwrap_or(&v.name).to_owned();
+        let full = if to.is_empty() { leaf.clone() } else { format!("{to}.{leaf}") };
+        let from = get(&v.props, prop::PARENT).and_then(Prop::int).unwrap_or(0);
+        if !to.is_empty() && self.find_var(to).is_some() {
+            return Err(format!("«{to}» es una variable, no una carpeta"));
+        }
+        if !to.is_empty() {
+            self.add_folder(to)?;
+        }
+        let dest = if to.is_empty() { 0 } else { self.find_folder(to).map(|f| f.id).ok_or_else(|| format!("no se pudo crear la carpeta «{to}»"))? };
+        if dest == from {
+            return Err(format!("«{}» ya está en esa carpeta", v.name));
+        }
+        if self.taken(self.container_of(dest)?, &leaf) {
+            return Err(format!("ya hay una variable o carpeta «{full}»"));
+        }
+        let name_id = get(&v.props, prop::NAME).and_then(Prop::int).ok_or("variable sin nombre")?;
+        // Con la carpeta nueva creada, la variable puede haber cambiado de sitio en la base.
+        let v = self.vars.iter().find(|x| x.id == v.id).cloned().ok_or("la variable desapareció al crear la carpeta")?;
+        let mut props: Vec<Prop> = v.props.iter().filter(|p| p.id != prop::PARENT).cloned().collect();
+        if dest != 0 {
+            props.push(Prop::u32_value(prop::PARENT, 0x15, dest));
+        }
+        splice(&mut self.b, v.at + 12, v.props_end, &encode_props(&props));
+        self.ns_remove_entry(name_id)?;
+        let node = self.container_of(dest)?;
+        self.ns_add_entry(node, name_id, &leaf)?;
+        self.reindex()?;
+        Ok(full)
+    }
+
+    /// Enlaces de las carpetas que llevan a algo de la carpeta `folder` (`0` = raíz), como van delante del de la variable:
+    /// `{F,2:1.1,MyController}.{F,2:1.4,System}.`.
+    pub fn folder_chain(&self, folder: u32) -> String {
+        let mut parts = Vec::new();
+        let mut at = folder;
+        while let Some(f) = self.folders.iter().find(|f| f.id == at) {
+            parts.push(format!("{{F,2:1.{},{}}}.", f.id, f.name));
+            at = f.parent;
+            if parts.len() > 64 {
+                break;
+            }
+        }
+        parts.reverse();
+        parts.concat()
+    }
+
     /// Cambia el texto de la entrada `id` de `NameServer` (en su sitio, con el mismo id).
     fn ns_set_entry(&mut self, id: u32, name: &str) -> Result<(), String> {
         let node = self.names.node_with_entry(id).ok_or_else(|| format!("el nombre {id} no está en NameServer"))?;

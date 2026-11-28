@@ -2086,7 +2086,7 @@ impl ConfigOps for Vd63Backend {
 
         let mut cfb = swx::open_vdz(vdz)?;
         let (mut db, target) = read_tagdb(&mut cfb, req.target.as_deref())?;
-        let need_streams = req.edits.iter().any(|e| matches!(e, VariableEdit::Delete { force: false, .. } | VariableEdit::Rename { .. } | VariableEdit::RenameFolder { .. }));
+        let need_streams = req.edits.iter().any(|e| matches!(e, VariableEdit::Delete { force: false, .. } | VariableEdit::Rename { .. } | VariableEdit::RenameFolder { .. } | VariableEdit::Move { .. }));
         let mut streams = if need_streams { target_streams(&mut cfb, db.active) } else { Vec::new() };
         // Streams que cambian al renombrar (además de TagDatabase y NameServer).
         let mut rewritten: BTreeSet<String> = BTreeSet::new();
@@ -2147,7 +2147,8 @@ impl ConfigOps for Vd63Backend {
                     let new_uses = usage::uses_of(&after, &new_full);
                     let left = usage::uses_of(&after, &v.name);
                     let broken: Vec<&usage::Broken> = after.broken.iter().filter(|b| b.id == v.id).collect();
-                    if new_uses != old_uses || !left.is_empty() || !broken.is_empty() {
+                    let stale = usage::stale_links(&streams, v.id, new_name.trim());
+                    if new_uses != old_uses || !left.is_empty() || !broken.is_empty() || !stale.is_empty() {
                         return Err(fail(format!(
                             "no se pudo renombrar «{}» sin perder usos (antes: {}; después: {}; con el nombre viejo: {}; enlaces rotos: {}): no se escribió nada",
                             v.name,
@@ -2159,6 +2160,44 @@ impl ConfigOps for Vd63Backend {
                     }
                     rewritten.extend(changed);
                     changes.push(format!("renombrada {} → {new_full} (en {} sitio(s): {})", v.name, new_uses.len(), new_uses.join("; ")));
+                    touched.push(new_full);
+                }
+                VariableEdit::Move { name, to } => {
+                    let to = to.trim().trim_matches('.');
+                    if !to.is_empty() {
+                        names(to)?;
+                    }
+                    let v = db.find_var(name).cloned().ok_or_else(|| fail(format!("no hay ninguna variable «{}»", name.trim())))?;
+                    let before = usage::scan(&db, &streams);
+                    let old_uses = usage::uses_of(&before, &v.name);
+                    if let Some(p) = old_uses.iter().find(|l| l.starts_with("Variables › Variable «")) {
+                        return Err(fail(format!("«{}» se usa en {p}: el MCP todavía no reescribe las referencias indirectas; cámbiala en Vijeo", v.name)));
+                    }
+                    if let Some((by, t)) = db.indirect_hit(&v.name, false) {
+                        return Err(fail(format!("la referencia indirecta de «{by}» ({t}) puede llevar a «{}»: moverla la dejaría sin destino; cámbiala en Vijeo", v.name)));
+                    }
+                    let from = v.name.rsplit_once('.').and_then(|(p, _)| db.find_folder(p)).map(|f| f.id).unwrap_or(0);
+                    let old_chain = db.folder_chain(from);
+                    let new_full = db.move_variable(&v.name, to).map_err(fail)?;
+                    let dest = new_full.rsplit_once('.').and_then(|(p, _)| db.find_folder(p)).map(|f| f.id).unwrap_or(0);
+                    let new_chain = db.folder_chain(dest);
+                    let changed = usage::rename_in_streams(&mut streams, &|s| usage::move_text(s, v.id, &v.name, &new_full, &old_chain, &new_chain)).map_err(fail)?;
+                    let after = usage::scan(&db, &streams);
+                    let new_uses = usage::uses_of(&after, &new_full);
+                    let left = usage::uses_of(&after, &v.name);
+                    let broken = after.broken.iter().filter(|b| b.id == v.id).count();
+                    let stale = usage::stale_links(&streams, v.id, new_full.rsplit('.').next().unwrap_or(&new_full));
+                    if new_uses != old_uses || !left.is_empty() || broken > 0 || !stale.is_empty() {
+                        return Err(fail(format!(
+                            "no se pudo mover «{}» sin perder usos (antes: {}; después: {}; con el nombre viejo: {}; enlaces rotos: {broken}): no se escribió nada",
+                            v.name,
+                            old_uses.join("; "),
+                            new_uses.join("; "),
+                            left.join("; ")
+                        )));
+                    }
+                    rewritten.extend(changed);
+                    changes.push(format!("movida {} → {new_full} (en {} sitio(s): {})", v.name, new_uses.len(), new_uses.join("; ")));
                     touched.push(new_full);
                 }
                 VariableEdit::RenameFolder { path, new_name } => {
@@ -2187,13 +2226,15 @@ impl ConfigOps for Vd63Backend {
                         .filter(|(n, u)| usage::uses_of(&after, &moved(n)) != **u || !usage::uses_of(&after, n).is_empty())
                         .map(|(n, _)| n.clone())
                         .collect();
-                    let broken = after.broken.len() > before.broken.len();
+                    let old_link = format!("{{F,2:1.{},{}}}", folder.id, folder.name);
+                    let stale = streams.iter().filter(|(p, _)| !p.ends_with("TagDatabase") && !p.ends_with("NameServer")).any(|(_, b)| objects::strings_in(b, 0).iter().any(|s| s.contains(&old_link)));
+                    let broken = after.broken.len() > before.broken.len() || stale;
                     if !lost.is_empty() || broken {
                         return Err(fail(format!(
                             "no se pudo renombrar la carpeta «{}» sin perder usos ({}{}): no se escribió nada",
                             folder.path,
                             if lost.is_empty() { String::new() } else { format!("de {}", lost.join(", ")) },
-                            if broken { "; quedarían enlaces rotos" } else { "" }
+                            if broken { "; quedarían enlaces rotos o con el nombre viejo" } else { "" }
                         )));
                     }
                     let sites: usize = old_uses.iter().map(Vec::len).sum();

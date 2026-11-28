@@ -187,6 +187,31 @@ pub fn rename_folder_text(s: &str, id: u32, old: &str, new: &str) -> Option<Stri
     rename_ident(s, 'F', id, old, new)
 }
 
+/// `s` con la variable `id` movida de `old` a `new` (nombres completos, mismo nombre en otra carpeta): la cadena de
+/// carpetas de su enlace (`{F,2:1.1,A}.{T,2:1.<id>,Var}` → `{F,2:1.7,B}.{T,2:1.<id>,Var}`, con las cadenas de
+/// `TagDb::folder_chain`) y el nombre completo como identificador, como en [`rename_text`].
+pub fn move_text(s: &str, id: u32, old: &str, new: &str, old_chain: &str, new_chain: &str) -> Option<String> {
+    let leaf = old.rsplit('.').next().unwrap_or(old);
+    let link = format!("{{T,2:1.{id},{leaf}}}");
+    // El enlace con la cadena vieja delante; sin carpetas (raíz), el enlace solo, sin una `}.` de carpeta justo antes.
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find(&link) {
+        let (head, tail) = rest.split_at(i);
+        if head.ends_with(old_chain) && (!old_chain.is_empty() || !head.ends_with("}.")) {
+            out.push_str(&head[..head.len() - old_chain.len()]);
+            out.push_str(new_chain);
+        } else {
+            out.push_str(head);
+        }
+        out.push_str(&link);
+        rest = &tail[link.len()..];
+    }
+    out.push_str(rest);
+    let out = rename_ident(&out, 'T', id, old, new).unwrap_or(out);
+    (out != s).then_some(out)
+}
+
 fn rename_ident(s: &str, kind: char, id: u32, old: &str, new: &str) -> Option<String> {
     let leaf = |n: &str| n.rsplit('.').next().unwrap_or(n).to_owned();
     let (old_leaf, new_leaf) = (leaf(old), leaf(new));
@@ -199,11 +224,15 @@ fn rename_ident(s: &str, kind: char, id: u32, old: &str, new: &str) -> Option<St
         before.push_str(head);
         let prev = before.chars().last();
         let after = tail[old.len()..].chars().next();
-        let starts = match prev {
-            None => true,
-            Some('.') => before.ends_with("TagDB."),
-            Some(c) => !ident(c),
-        };
+        // Dentro de un enlace (`{T,2:1.9,xDone}`) va sólo el nombre corto: lo cambia el reemplazo del enlace, no este.
+        let open = before.rfind('{').filter(|&i| before.rfind('}') < Some(i));
+        let in_link = open.is_some_and(|i| before[i + 1..].starts_with("T,") || before[i + 1..].starts_with("F,"));
+        let starts = !in_link
+            && match prev {
+                None => true,
+                Some('.') => before.ends_with("TagDB."),
+                Some(c) => !ident(c),
+            };
         // Una variable acaba ahí (o sigue un método o un miembro); una carpeta siempre va seguida de lo que contiene.
         let ends = if kind == 'F' { after == Some('.') } else { after.is_none_or(|c| !ident(c)) };
         if starts && ends {
@@ -215,6 +244,16 @@ fn rename_ident(s: &str, kind: char, id: u32, old: &str, new: &str) -> Option<St
     }
     before.push_str(rest);
     (before != s).then_some(before)
+}
+
+/// Enlaces a la variable `id` que guardan otro nombre que `leaf` (sitio y nombre guardado). El análisis de uso los da por
+/// buenos (resuelve por id), pero tras renombrar o mover tienen que llevar el nombre nuevo.
+pub fn stale_links(streams: &[(String, Vec<u8>)], id: u32, leaf: &str) -> Vec<String> {
+    streams
+        .iter()
+        .filter(|(p, _)| !p.ends_with("TagDatabase") && !p.ends_with("NameServer"))
+        .flat_map(|(p, b)| strings_in(b, 0).into_iter().flat_map(|s| links(&s)).filter(|l| l.0 == '2' && l.1 == id && l.3 != leaf).map(move |l| format!("{p}: {}", l.3)))
+        .collect()
 }
 
 /// Streams que no se reescriben al renombrar: los textos que ve el usuario y las cachés de Vijeo.
@@ -400,6 +439,7 @@ mod tests {
             let after = scan(&db, &streams);
             assert_eq!(uses_of(&after, &new), before, "{old}");
             assert!(uses_of(&after, old).is_empty() && after.broken.is_empty(), "{old}: {:?}", after.broken);
+            assert!(stale_links(&streams, id, leaf).is_empty(), "{old}");
         }
         let actions = streams.iter().find(|(p, _)| p.ends_with("ActionsManagerStream")).unwrap();
         let texts = crate::objects::strings_in(&actions.1, 0).join("\n");
@@ -448,6 +488,44 @@ mod tests {
         assert!(db.rename_folder("Controlador", "Alarms").is_ok(), "no choca con la carpeta Controlador.Alarms, que es de otro nivel");
         assert!(db.rename_folder("NoExiste", "x").unwrap_err().contains("no hay"));
         assert!(db.rename_folder("Alarms.Alarms", "Energia").unwrap_err().contains("ya hay"), "hermana con ese nombre");
+    }
+
+    #[test]
+    fn moves_the_folder_chain_of_links() {
+        let (a, b) = ("{F,2:1.1,Ctl}.{F,2:1.4,Sys}.", "{F,2:1.9,Otra}.");
+        let m = |s: &str| move_text(s, 124, "Ctl.Sys.xPulse", "Otra.xPulse", a, b);
+        assert_eq!(m("${F,2:1.1,Ctl}.{F,2:1.4,Sys}.{T,2:1.124,xPulse}$").as_deref(), Some("${F,2:1.9,Otra}.{T,2:1.124,xPulse}$"));
+        assert_eq!(m("(TagDB.Ctl.Sys.xPulse.getIntValue(0) != 0)").as_deref(), Some("(TagDB.Otra.xPulse.getIntValue(0) != 0)"));
+        assert_eq!(m("{F,2:1.1,Ctl}.{F,2:1.4,Sys}.{T,2:1.125,xPulse}"), None, "otro id");
+        // De la raíz a una carpeta y de una carpeta a la raíz.
+        assert_eq!(move_text("!{T,2:1.9,xDone}", 9, "xDone", "A.xDone", "", "{F,2:1.3,A}.").as_deref(), Some("!{F,2:1.3,A}.{T,2:1.9,xDone}"));
+        assert_eq!(move_text("{F,2:1.3,A}.{T,2:1.9,xDone}; TagDB.A.xDone", 9, "A.xDone", "xDone", "{F,2:1.3,A}.", "").as_deref(), Some("{T,2:1.9,xDone}; TagDB.xDone"));
+    }
+
+    /// Mover en el ejemplo Modbus: entre dos carpetas, de la raíz a una carpeta nueva y de una carpeta a la raíz.
+    #[test]
+    fn moves_variables_in_panels_and_actions() {
+        let Some((mut db, mut streams)) = open("Compact_Modbus SL_M221_Book") else { return };
+        for (old, to) in [("MyController.Energy.reTotalEnergy", "MyController.DateAndTime"), ("xRTCSyncDone", "Mcp.Sub"), ("MyController.DateAndTime.iGetRTCSec", "")] {
+            let before = uses_of(&scan(&db, &streams), old);
+            assert!(!before.is_empty(), "{old}");
+            let id = db.find_var(old).unwrap().id;
+            let from = old.rsplit_once('.').and_then(|(p, _)| db.find_folder(p)).map(|f| f.id).unwrap_or(0);
+            let old_chain = db.folder_chain(from);
+            let new = db.move_variable(old, to).unwrap();
+            let dest = new.rsplit_once('.').and_then(|(p, _)| db.find_folder(p)).map(|f| f.id).unwrap_or(0);
+            let new_chain = db.folder_chain(dest);
+            rename_in_streams(&mut streams, &|s| move_text(s, id, old, &new, &old_chain, &new_chain)).unwrap();
+            let after = scan(&db, &streams);
+            assert_eq!(uses_of(&after, &new), before, "{old} → {new}");
+            assert!(uses_of(&after, old).is_empty() && after.broken.is_empty(), "{old}: {:?}", after.broken);
+            assert!(stale_links(&streams, id, new.rsplit('.').next().unwrap()).is_empty(), "{old}");
+            assert_eq!(db.find_var(&new).unwrap().id, id);
+        }
+        assert!(db.find_var("Mcp.Sub.xRTCSyncDone").is_some() && db.find_var("iGetRTCSec").is_some());
+        assert!(db.move_variable("Mcp.Sub.xRTCSyncDone", "Mcp.Sub").unwrap_err().contains("ya está"));
+        assert!(db.move_variable("MyController.DateAndTime.reTotalEnergy", "MyController.Energy").is_ok());
+        assert!(db.move_variable("iGetRTCSec", "MyController.Energy.reTotalEnergy").unwrap_err().contains("no una carpeta"));
     }
 
     #[test]

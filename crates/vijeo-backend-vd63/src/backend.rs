@@ -2086,7 +2086,7 @@ impl ConfigOps for Vd63Backend {
 
         let mut cfb = swx::open_vdz(vdz)?;
         let (mut db, target) = read_tagdb(&mut cfb, req.target.as_deref())?;
-        let need_streams = req.edits.iter().any(|e| matches!(e, VariableEdit::Delete { force: false, .. } | VariableEdit::Rename { .. } | VariableEdit::RenameFolder { .. } | VariableEdit::Move { .. }));
+        let need_streams = req.edits.iter().any(|e| matches!(e, VariableEdit::Delete { force: false, .. } | VariableEdit::Rename { .. } | VariableEdit::RenameFolder { .. } | VariableEdit::Move { .. } | VariableEdit::MoveFolder { .. }));
         let mut streams = if need_streams { target_streams(&mut cfb, db.active) } else { Vec::new() };
         // Streams que cambian al renombrar (además de TagDatabase y NameServer).
         let mut rewritten: BTreeSet<String> = BTreeSet::new();
@@ -2147,7 +2147,8 @@ impl ConfigOps for Vd63Backend {
                     let new_uses = usage::uses_of(&after, &new_full);
                     let left = usage::uses_of(&after, &v.name);
                     let broken: Vec<&usage::Broken> = after.broken.iter().filter(|b| b.id == v.id).collect();
-                    let stale = usage::stale_links(&streams, v.id, new_name.trim());
+                    let mut stale = usage::stale_links(&streams, v.id, new_name.trim());
+                    stale.extend(usage::placeholder_leftovers(&streams, &v.name, false));
                     if new_uses != old_uses || !left.is_empty() || !broken.is_empty() || !stale.is_empty() {
                         return Err(fail(format!(
                             "no se pudo renombrar «{}» sin perder usos (antes: {}; después: {}; con el nombre viejo: {}; enlaces rotos: {}): no se escribió nada",
@@ -2177,16 +2178,21 @@ impl ConfigOps for Vd63Backend {
                         return Err(fail(format!("la referencia indirecta de «{by}» ({t}) puede llevar a «{}»: moverla la dejaría sin destino; cámbiala en Vijeo", v.name)));
                     }
                     let from = v.name.rsplit_once('.').and_then(|(p, _)| db.find_folder(p)).map(|f| f.id).unwrap_or(0);
-                    let old_chain = db.folder_chain(from);
+                    let old_dirs = db.ancestors(from);
+                    let chains_before = usage::chain_errors(&db, &streams);
                     let new_full = db.move_variable(&v.name, to).map_err(fail)?;
                     let dest = new_full.rsplit_once('.').and_then(|(p, _)| db.find_folder(p)).map(|f| f.id).unwrap_or(0);
-                    let new_chain = db.folder_chain(dest);
-                    let changed = usage::rename_in_streams(&mut streams, &|s| usage::move_text(s, v.id, &v.name, &new_full, &old_chain, &new_chain)).map_err(fail)?;
+                    let new_dirs = db.ancestors(dest);
+                    let changed = usage::try_rename_in_streams(&mut streams, &|s| usage::move_text(s, v.id, &v.name, &new_full, &old_dirs, &new_dirs)).map_err(fail)?;
                     let after = usage::scan(&db, &streams);
                     let new_uses = usage::uses_of(&after, &new_full);
                     let left = usage::uses_of(&after, &v.name);
                     let broken = after.broken.iter().filter(|b| b.id == v.id).count();
-                    let stale = usage::stale_links(&streams, v.id, new_full.rsplit('.').next().unwrap_or(&new_full));
+                    let mut stale = usage::stale_links(&streams, v.id, new_full.rsplit('.').next().unwrap_or(&new_full));
+                    stale.extend(usage::placeholder_leftovers(&streams, &v.name, false));
+                    if usage::chain_errors(&db, &streams) > chains_before {
+                        stale.push("cadenas de carpetas que no siguen la jerarquía nueva".into());
+                    }
                     if new_uses != old_uses || !left.is_empty() || broken > 0 || !stale.is_empty() {
                         return Err(fail(format!(
                             "no se pudo mover «{}» sin perder usos (antes: {}; después: {}; con el nombre viejo: {}; enlaces rotos: {broken}): no se escribió nada",
@@ -2228,6 +2234,7 @@ impl ConfigOps for Vd63Backend {
                         .collect();
                     let old_link = format!("{{F,2:1.{},{}}}", folder.id, folder.name);
                     let stale = streams.iter().filter(|(p, _)| !p.ends_with("TagDatabase") && !p.ends_with("NameServer")).any(|(_, b)| objects::strings_in(b, 0).iter().any(|s| s.contains(&old_link)));
+                    let stale = stale || !usage::placeholder_leftovers(&streams, &folder.path, true).is_empty();
                     let broken = after.broken.len() > before.broken.len() || stale;
                     if !lost.is_empty() || broken {
                         return Err(fail(format!(
@@ -2240,6 +2247,56 @@ impl ConfigOps for Vd63Backend {
                     let sites: usize = old_uses.iter().map(Vec::len).sum();
                     rewritten.extend(changed);
                     changes.push(format!("renombrada la carpeta {} → {new_path} ({} variable(s), {sites} uso(s))", folder.path, old_vars.len()));
+                    touched.extend(old_vars.iter().map(|n| moved(n)));
+                }
+                VariableEdit::MoveFolder { path, to } => {
+                    let to = to.trim().trim_matches('.');
+                    if !to.is_empty() {
+                        names(to)?;
+                    }
+                    let folder = db.find_folder(path.trim().trim_matches('.')).cloned().ok_or_else(|| fail(format!("no hay ninguna carpeta «{}»", path.trim())))?;
+                    let inside = |db: &tagdb::TagDb, p: &str| -> Vec<String> {
+                        let pre = format!("{p}.");
+                        db.vars.iter().filter(|v| !v.system && v.name.starts_with(&pre)).map(|v| v.name.clone()).collect()
+                    };
+                    let before = usage::scan(&db, &streams);
+                    let old_vars = inside(&db, &folder.path);
+                    let old_uses: Vec<Vec<String>> = old_vars.iter().map(|n| usage::uses_of(&before, n)).collect();
+                    if let Some((n, p)) = old_vars.iter().zip(&old_uses).find_map(|(n, u)| u.iter().find(|l| l.starts_with("Variables › Variable «")).map(|p| (n, p))) {
+                        return Err(fail(format!("«{n}» se usa en {p}: el MCP todavía no reescribe las referencias indirectas; cámbiala en Vijeo")));
+                    }
+                    if let Some((by, t)) = db.indirect_hit(&folder.path, true) {
+                        return Err(fail(format!("la referencia indirecta de «{by}» ({t}) puede llevar a lo que hay en «{}»: moverla la dejaría sin destino; cámbialo en Vijeo", folder.path)));
+                    }
+                    let old_dirs = db.ancestors(folder.parent);
+                    let chains_before = usage::chain_errors(&db, &streams);
+                    let new_path = db.move_folder(&folder.path, to).map_err(fail)?;
+                    let parent = db.find_folder(&new_path).map(|f| f.parent).unwrap_or(0);
+                    let new_dirs = db.ancestors(parent);
+                    let changed =
+                        usage::try_rename_in_streams(&mut streams, &|s| usage::move_folder_text(s, folder.id, &folder.path, &new_path, &old_dirs, &new_dirs)).map_err(fail)?;
+                    let after = usage::scan(&db, &streams);
+                    let moved = |n: &str| format!("{new_path}{}", &n[folder.path.len()..]);
+                    let lost: Vec<String> = old_vars
+                        .iter()
+                        .zip(&old_uses)
+                        .filter(|(n, u)| usage::uses_of(&after, &moved(n)) != **u || !usage::uses_of(&after, n).is_empty())
+                        .map(|(n, _)| n.clone())
+                        .collect();
+                    // Ninguna cadena de enlaces que no siga la jerarquía nueva, ni nombres en placeholders con la ruta vieja.
+                    let stale = usage::chain_errors(&db, &streams) > chains_before || !usage::placeholder_leftovers(&streams, &folder.path, true).is_empty();
+                    let broken = after.broken.len() > before.broken.len() || stale;
+                    if !lost.is_empty() || broken {
+                        return Err(fail(format!(
+                            "no se pudo mover la carpeta «{}» sin perder usos ({}{}): no se escribió nada",
+                            folder.path,
+                            if lost.is_empty() { String::new() } else { format!("de {}", lost.join(", ")) },
+                            if broken { "; quedarían enlaces rotos o con la ruta vieja" } else { "" }
+                        )));
+                    }
+                    let sites: usize = old_uses.iter().map(Vec::len).sum();
+                    rewritten.extend(changed);
+                    changes.push(format!("movida la carpeta {} → {new_path} ({} variable(s), {sites} uso(s))", folder.path, old_vars.len()));
                     touched.extend(old_vars.iter().map(|n| moved(n)));
                 }
                 VariableEdit::AddFolder { path } => {

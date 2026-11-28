@@ -1218,20 +1218,53 @@ impl TagDb {
         Ok(full)
     }
 
-    /// Enlaces de las carpetas que llevan a algo de la carpeta `folder` (`0` = raíz), como van delante del de la variable:
-    /// `{F,2:1.1,MyController}.{F,2:1.4,System}.`.
-    pub fn folder_chain(&self, folder: u32) -> String {
-        let mut parts = Vec::new();
+    /// Mueve una carpeta, con todo lo que contiene, dentro de la carpeta `to` (`""` = la raíz; las que falten se crean),
+    /// con el mismo nombre y el mismo id: su padre (en su registro, +16) y su entrada de `NameServer`, que pasa al nodo de
+    /// la carpeta nueva (el nodo con lo que contiene no cambia). Devuelve la ruta nueva.
+    pub fn move_folder(&mut self, path: &str, to: &str) -> Result<String, String> {
+        let f = self.find_folder(path.trim().trim_matches('.')).cloned().ok_or_else(|| format!("no hay ninguna carpeta «{}»", path.trim()))?;
+        let to = to.trim().trim_matches('.');
+        if to.eq_ignore_ascii_case(&f.path) || to.to_lowercase().starts_with(&format!("{}.", f.path.to_lowercase())) {
+            return Err(format!("no se puede mover «{}» dentro de sí misma", f.path));
+        }
+        if !to.is_empty() && self.find_var(to).is_some() {
+            return Err(format!("«{to}» es una variable, no una carpeta"));
+        }
+        if !to.is_empty() {
+            self.add_folder(to)?;
+        }
+        let dest = if to.is_empty() { 0 } else { self.find_folder(to).map(|d| d.id).ok_or_else(|| format!("no se pudo crear la carpeta «{to}»"))? };
+        if dest == f.parent {
+            return Err(format!("«{}» ya está en esa carpeta", f.path));
+        }
+        let full = if to.is_empty() { f.name.clone() } else { format!("{to}.{}", f.name) };
+        if self.taken(self.container_of(dest)?, &f.name) {
+            return Err(format!("ya hay una variable o carpeta «{full}»"));
+        }
+        // Con la carpeta nueva creada, el registro puede haber cambiado de sitio.
+        let at = self.folders.iter().find(|x| x.id == f.id).map(|x| x.at).ok_or("la carpeta desapareció al crear la otra")?;
+        put_u32(&mut self.b, at + 16, dest);
+        self.ns_remove_entry(f.name_id)?;
+        let node = self.container_of(dest)?;
+        self.ns_add_entry(node, f.name_id, &f.name)?;
+        self.reindex()?;
+        Ok(full)
+    }
+
+    /// La carpeta `folder` (`0` = raíz, ninguna) y las que la contienen, de la raíz hacia abajo, como (id, nombre): las de los
+    /// enlaces que van delante del de algo que está en ella (`{F,2:1.1,MyController}.{F,2:1.4,System}.`).
+    pub fn ancestors(&self, folder: u32) -> Vec<(u32, String)> {
+        let mut out = Vec::new();
         let mut at = folder;
         while let Some(f) = self.folders.iter().find(|f| f.id == at) {
-            parts.push(format!("{{F,2:1.{},{}}}.", f.id, f.name));
+            out.push((f.id, f.name.clone()));
             at = f.parent;
-            if parts.len() > 64 {
+            if out.len() > 64 {
                 break;
             }
         }
-        parts.reverse();
-        parts.concat()
+        out.reverse();
+        out
     }
 
     /// Cambia el texto de la entrada `id` de `NameServer` (en su sitio, con el mismo id).

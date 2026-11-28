@@ -187,29 +187,148 @@ pub fn rename_folder_text(s: &str, id: u32, old: &str, new: &str) -> Option<Stri
     rename_ident(s, 'F', id, old, new)
 }
 
-/// `s` con la variable `id` movida de `old` a `new` (nombres completos, mismo nombre en otra carpeta): la cadena de
-/// carpetas de su enlace (`{F,2:1.1,A}.{T,2:1.<id>,Var}` → `{F,2:1.7,B}.{T,2:1.<id>,Var}`, con las cadenas de
-/// `TagDb::folder_chain`) y el nombre completo como identificador, como en [`rename_text`].
-pub fn move_text(s: &str, id: u32, old: &str, new: &str, old_chain: &str, new_chain: &str) -> Option<String> {
-    let leaf = old.rsplit('.').next().unwrap_or(old);
-    let link = format!("{{T,2:1.{id},{leaf}}}");
-    // El enlace con la cadena vieja delante; sin carpetas (raíz), el enlace solo, sin una `}.` de carpeta justo antes.
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(i) = rest.find(&link) {
-        let (head, tail) = rest.split_at(i);
-        if head.ends_with(old_chain) && (!old_chain.is_empty() || !head.ends_with("}.")) {
-            out.push_str(&head[..head.len() - old_chain.len()]);
-            out.push_str(new_chain);
-        } else {
-            out.push_str(head);
-        }
-        out.push_str(&link);
-        rest = &tail[link.len()..];
-    }
-    out.push_str(rest);
+/// Carpetas de la raíz hacia abajo, como (id, nombre) de sus enlaces `{F,2:1.<id>,Nombre}`.
+pub type Ancestors = [(u32, String)];
+
+/// `s` con la variable `id` movida de `old` a `new` (nombres completos, mismo nombre en otra carpeta): las carpetas que van
+/// delante de su enlace (`{F,2:1.1,A}.{T,2:1.<id>,Var}` → `{F,2:1.7,B}.{T,2:1.<id>,Var}`; `old_dirs`/`new_dirs` de
+/// `TagDb::ancestors`) y el nombre completo como identificador, como en [`rename_text`]. Error si un enlace no se puede
+/// reescribir sin dudas (otra cadena de carpetas, un placeholder `$` entre ellas).
+pub fn move_text(s: &str, id: u32, old: &str, new: &str, old_dirs: &Ancestors, new_dirs: &Ancestors) -> Result<Option<String>, String> {
+    let out = swap_prefix(s, 'T', id, old_dirs, new_dirs)?;
     let out = rename_ident(&out, 'T', id, old, new).unwrap_or(out);
-    (out != s).then_some(out)
+    Ok((out != s).then_some(out))
+}
+
+/// `s` con la carpeta `id` movida de `old` a `new` (rutas completas, mismo nombre en otra carpeta): las carpetas que van
+/// delante de su enlace (las de su padre viejo y nuevo) y la ruta al principio de los nombres de lo que contiene, como en
+/// [`rename_folder_text`].
+pub fn move_folder_text(s: &str, id: u32, old: &str, new: &str, old_dirs: &Ancestors, new_dirs: &Ancestors) -> Result<Option<String>, String> {
+    let out = swap_prefix(s, 'F', id, old_dirs, new_dirs)?;
+    let out = rename_ident(&out, 'F', id, old, new).unwrap_or(out);
+    Ok((out != s).then_some(out))
+}
+
+/// Enlaces de `s` (`{F,2:1.<id>,…}`, `{T,2:1.<id>,…}`, `{T,3:1.<id>.<m>,…}`): (inicio, fin, tipo, id).
+fn link_spans(s: &str) -> Vec<(usize, usize, char, u32)> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(i) = s[from..].find('{').map(|i| i + from) {
+        let rest = &s[i + 1..];
+        let Some(end) = rest.find('}') else { break };
+        let body = &rest[..end];
+        let kind = body.chars().next().filter(|k| matches!(k, 'F' | 'T'));
+        if let (Some(k), Some((_, tail))) = (kind, body.split_once(":1.")) {
+            if body[1..].starts_with(',') {
+                if let Some(id) = tail.split(['.', ',']).next().and_then(|x| x.parse().ok()) {
+                    out.push((i, i + 1 + end + 1, k, id));
+                }
+            }
+        }
+        from = i + 1;
+    }
+    out
+}
+
+/// Cadenas de enlaces seguidos (separados sólo por `.` y los `$` de los placeholders), como rangos de `link_spans`.
+fn chains(s: &str, spans: &[(usize, usize, char, u32)]) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < spans.len() {
+        let mut j = i;
+        while j + 1 < spans.len() {
+            let gap = &s[spans[j].1..spans[j + 1].0];
+            if gap.contains('.') && gap.chars().all(|c| c == '.' || c == '$') {
+                j += 1;
+            } else {
+                break;
+            }
+        }
+        out.push(i..j + 1);
+        i = j + 1;
+    }
+    out
+}
+
+/// Cambia las carpetas que van delante del enlace `(kind, id)` en cada cadena de `s`: tienen que ser `old` (de la raíz
+/// hacia abajo) y pasan a ser `new`. El separador justo delante del enlace (`.` o el `$.` de un placeholder) se conserva.
+fn swap_prefix(s: &str, kind: char, id: u32, old: &Ancestors, new: &Ancestors) -> Result<String, String> {
+    let spans = link_spans(s);
+    let mut out = String::with_capacity(s.len());
+    let mut last = 0;
+    for r in chains(s, &spans) {
+        let chain = &spans[r];
+        let Some(k) = chain.iter().position(|t| t.2 == kind && t.3 == id) else { continue };
+        let shown = &s[chain[0].0..chain[chain.len() - 1].1];
+        let before: Vec<u32> = chain[..k].iter().map(|t| t.3).collect();
+        let expected: Vec<u32> = old.iter().map(|a| a.0).collect();
+        if chain[..k].iter().any(|t| t.2 != 'F') || before != expected {
+            return Err(format!("un enlace lleva otra cadena de carpetas de la esperada: «{shown}»"));
+        }
+        if (1..k).any(|m| s[chain[m - 1].1..chain[m].0].contains('$')) {
+            return Err(format!("un placeholder ($) corta la cadena de carpetas: «{shown}»; muévelo en Vijeo"));
+        }
+        let sep = if k > 0 { &s[chain[k - 1].1..chain[k].0] } else { "." };
+        if new.is_empty() && sep.contains('$') {
+            return Err(format!("un placeholder ($) quedaría sin carpetas: «{shown}»; muévelo en Vijeo"));
+        }
+        let start = if k > 0 { chain[0].0 } else { chain[k].0 };
+        out.push_str(&s[last..start]);
+        let dirs: Vec<String> = new.iter().map(|(fid, name)| format!("{{F,2:1.{fid},{name}}}")).collect();
+        if !dirs.is_empty() {
+            out.push_str(&dirs.join("."));
+            out.push_str(sep);
+        }
+        last = chain[k].0;
+    }
+    out.push_str(&s[last..]);
+    Ok(out)
+}
+
+/// Cadenas de enlaces que no siguen la jerarquía de la base: una carpeta o variable detrás de una carpeta que no es la
+/// suya. Sirve para comparar antes y después de mover (las relativas, si las hay, cuentan igual en los dos).
+pub fn chain_errors(db: &TagDb, streams: &[(String, Vec<u8>)]) -> usize {
+    let folder_parent: BTreeMap<u32, u32> = db.folders.iter().map(|f| (f.id, f.parent)).collect();
+    let var_parent: BTreeMap<u32, u32> = db.vars.iter().map(|v| (v.id, v.name.rsplit_once('.').and_then(|(p, _)| db.find_folder(p)).map(|f| f.id).unwrap_or(0))).collect();
+    let mut n = 0;
+    for (p, b) in streams {
+        if p.ends_with("TagDatabase") || p.ends_with("NameServer") {
+            continue;
+        }
+        for s in strings_in(b, 0) {
+            let spans = link_spans(&s);
+            for r in chains(&s, &spans) {
+                for w in spans[r].windows(2) {
+                    let parent = match w[1].2 {
+                        'F' => folder_parent.get(&w[1].3),
+                        _ => var_parent.get(&w[1].3),
+                    };
+                    // Un miembro de estructura (`{T,3:1.<id>.<m>}`) va detrás de su instancia, no de una carpeta.
+                    if w[0].2 == 'F' && parent.is_some_and(|&p| p != w[0].3) {
+                        n += 1;
+                    }
+                }
+            }
+        }
+    }
+    n
+}
+
+/// Nombres en placeholders (`$Carpeta.Sub$.Var`) que, quitando los `$`, siguen nombrando `old` (o, con `folder`, algo
+/// dentro de esa carpeta): el reemplazo por nombre no los ve partidos.
+pub fn placeholder_leftovers(streams: &[(String, Vec<u8>)], old: &str, folder: bool) -> Vec<String> {
+    let pre = format!("{old}.");
+    let mut out = Vec::new();
+    for (p, b) in streams.iter().filter(|(p, _)| !p.ends_with("TagDatabase") && !p.ends_with("NameServer") && !p.ends_with("LangManagerData")) {
+        for s in strings_in(b, 0).into_iter().filter(|s| s.contains('$')) {
+            let plain = s.replace('$', "");
+            let hit = identifiers(&plain).map(|t| t.strip_prefix("TagDB.").unwrap_or(t)).any(|t| (!folder && (t == old || t.starts_with(&pre))) || (folder && t.starts_with(&pre)));
+            if hit {
+                out.push(format!("{p}: {}", s.chars().take(80).collect::<String>()));
+            }
+        }
+    }
+    out
 }
 
 fn rename_ident(s: &str, kind: char, id: u32, old: &str, new: &str) -> Option<String> {
@@ -234,7 +353,7 @@ fn rename_ident(s: &str, kind: char, id: u32, old: &str, new: &str) -> Option<St
                 Some(c) => !ident(c),
             };
         // Una variable acaba ahí (o sigue un método o un miembro); una carpeta siempre va seguida de lo que contiene.
-        let ends = if kind == 'F' { after == Some('.') } else { after.is_none_or(|c| !ident(c)) };
+        let ends = if kind == 'F' { matches!(after, Some('.' | '$')) } else { after.is_none_or(|c| !ident(c)) };
         if starts && ends {
             before.push_str(new);
         } else {
@@ -258,6 +377,22 @@ pub fn stale_links(streams: &[(String, Vec<u8>)], id: u32, leaf: &str) -> Vec<St
 
 /// Streams que no se reescriben al renombrar: los textos que ve el usuario y las cachés de Vijeo.
 const RENAME_SKIP: [&str; 5] = ["/TagDatabase", "/NameServer", "/LangManagerData", "/StatusFlags", "/WindowObject"];
+
+/// Como [`rename_in_streams`] con una `f` que puede negarse (devuelve el primer error y entonces no vale lo cambiado).
+pub fn try_rename_in_streams(streams: &mut [(String, Vec<u8>)], f: &dyn Fn(&str) -> Result<Option<String>, String>) -> Result<Vec<String>, String> {
+    let failed = std::cell::RefCell::new(None::<String>);
+    let changed = rename_in_streams(streams, &|s| match f(s) {
+        Ok(v) => v,
+        Err(e) => {
+            failed.borrow_mut().get_or_insert(e);
+            None
+        }
+    })?;
+    match failed.into_inner() {
+        Some(e) => Err(e),
+        None => Ok(changed),
+    }
+}
 
 /// Aplica `f` (un renombrado) a los streams del target (`GraphicalObject` objeto por objeto; el resto, sus cadenas).
 /// Devuelve las rutas de los streams que cambiaron.
@@ -490,32 +625,42 @@ mod tests {
         assert!(db.rename_folder("Alarms.Alarms", "Energia").unwrap_err().contains("ya hay"), "hermana con ese nombre");
     }
 
+    fn dirs(v: &[(u32, &str)]) -> Vec<(u32, String)> {
+        v.iter().map(|(i, n)| (*i, (*n).to_owned())).collect()
+    }
+
     #[test]
     fn moves_the_folder_chain_of_links() {
-        let (a, b) = ("{F,2:1.1,Ctl}.{F,2:1.4,Sys}.", "{F,2:1.9,Otra}.");
-        let m = |s: &str| move_text(s, 124, "Ctl.Sys.xPulse", "Otra.xPulse", a, b);
+        let (a, b) = (dirs(&[(1, "Ctl"), (4, "Sys")]), dirs(&[(9, "Otra")]));
+        let m = |s: &str| move_text(s, 124, "Ctl.Sys.xPulse", "Otra.xPulse", &a, &b).unwrap();
         assert_eq!(m("${F,2:1.1,Ctl}.{F,2:1.4,Sys}.{T,2:1.124,xPulse}$").as_deref(), Some("${F,2:1.9,Otra}.{T,2:1.124,xPulse}$"));
+        // Placeholder entre las carpetas y la variable (`$.`): se conserva.
+        assert_eq!(m("${F,2:1.1,Ctl}.{F,2:1.4,Sys}$.{T,2:1.124,xPulse}").as_deref(), Some("${F,2:1.9,Otra}$.{T,2:1.124,xPulse}"));
         assert_eq!(m("(TagDB.Ctl.Sys.xPulse.getIntValue(0) != 0)").as_deref(), Some("(TagDB.Otra.xPulse.getIntValue(0) != 0)"));
         assert_eq!(m("{F,2:1.1,Ctl}.{F,2:1.4,Sys}.{T,2:1.125,xPulse}"), None, "otro id");
+        // Lo que no se puede reescribir sin dudas se niega.
+        assert!(move_text("{F,2:1.4,Sys}.{T,2:1.124,xPulse}", 124, "Ctl.Sys.xPulse", "Otra.xPulse", &a, &b).unwrap_err().contains("otra cadena"));
+        assert!(move_text("${F,2:1.1,Ctl}$.{F,2:1.4,Sys}.{T,2:1.124,xPulse}", 124, "Ctl.Sys.xPulse", "Otra.xPulse", &a, &b).unwrap_err().contains("corta"));
+        assert!(move_text("${F,2:1.1,Ctl}.{F,2:1.4,Sys}$.{T,2:1.124,xPulse}", 124, "Ctl.Sys.xPulse", "xPulse", &a, &[]).unwrap_err().contains("sin carpetas"));
         // De la raíz a una carpeta y de una carpeta a la raíz.
-        assert_eq!(move_text("!{T,2:1.9,xDone}", 9, "xDone", "A.xDone", "", "{F,2:1.3,A}.").as_deref(), Some("!{F,2:1.3,A}.{T,2:1.9,xDone}"));
-        assert_eq!(move_text("{F,2:1.3,A}.{T,2:1.9,xDone}; TagDB.A.xDone", 9, "A.xDone", "xDone", "{F,2:1.3,A}.", "").as_deref(), Some("{T,2:1.9,xDone}; TagDB.xDone"));
+        assert_eq!(move_text("!{T,2:1.9,xDone}", 9, "xDone", "A.xDone", &[], &dirs(&[(3, "A")])).unwrap().as_deref(), Some("!{F,2:1.3,A}.{T,2:1.9,xDone}"));
+        assert_eq!(move_text("{F,2:1.3,A}.{T,2:1.9,xDone}; TagDB.A.xDone", 9, "A.xDone", "xDone", &dirs(&[(3, "A")]), &[]).unwrap().as_deref(), Some("{T,2:1.9,xDone}; TagDB.xDone"));
     }
 
     /// Mover en el ejemplo Modbus: entre dos carpetas, de la raíz a una carpeta nueva y de una carpeta a la raíz.
     #[test]
     fn moves_variables_in_panels_and_actions() {
         let Some((mut db, mut streams)) = open("Compact_Modbus SL_M221_Book") else { return };
-        for (old, to) in [("MyController.Energy.reTotalEnergy", "MyController.DateAndTime"), ("xRTCSyncDone", "Mcp.Sub"), ("MyController.DateAndTime.iGetRTCSec", "")] {
+        for (old, to) in [("MyController.Energy.reTotalEnergy", "MyController.DateAndTime"), ("xRTCSyncDone", "Mcp.Sub"), ("MyController.DateAndTime.iGetRTCSec", ""), ("MyController.System.xStatManMode", "MyController.Energy")] {
             let before = uses_of(&scan(&db, &streams), old);
             assert!(!before.is_empty(), "{old}");
             let id = db.find_var(old).unwrap().id;
             let from = old.rsplit_once('.').and_then(|(p, _)| db.find_folder(p)).map(|f| f.id).unwrap_or(0);
-            let old_chain = db.folder_chain(from);
+            let old_dirs = db.ancestors(from);
             let new = db.move_variable(old, to).unwrap();
             let dest = new.rsplit_once('.').and_then(|(p, _)| db.find_folder(p)).map(|f| f.id).unwrap_or(0);
-            let new_chain = db.folder_chain(dest);
-            rename_in_streams(&mut streams, &|s| move_text(s, id, old, &new, &old_chain, &new_chain)).unwrap();
+            let new_dirs = db.ancestors(dest);
+            try_rename_in_streams(&mut streams, &|s| move_text(s, id, old, &new, &old_dirs, &new_dirs)).unwrap();
             let after = scan(&db, &streams);
             assert_eq!(uses_of(&after, &new), before, "{old} → {new}");
             assert!(uses_of(&after, old).is_empty() && after.broken.is_empty(), "{old}: {:?}", after.broken);
@@ -526,6 +671,48 @@ mod tests {
         assert!(db.move_variable("Mcp.Sub.xRTCSyncDone", "Mcp.Sub").unwrap_err().contains("ya está"));
         assert!(db.move_variable("MyController.DateAndTime.reTotalEnergy", "MyController.Energy").is_ok());
         assert!(db.move_variable("iGetRTCSec", "MyController.Energy.reTotalEnergy").unwrap_err().contains("no una carpeta"));
+    }
+
+    #[test]
+    fn moves_the_chain_in_front_of_a_folder() {
+        let (a, b) = (dirs(&[(1, "Ctl")]), dirs(&[(9, "Otra")]));
+        let m = |s: &str| move_folder_text(s, 4, "Ctl.Sys", "Otra.Sys", &a, &b).unwrap();
+        assert_eq!(m("${F,2:1.1,Ctl}.{F,2:1.4,Sys}$.{T,2:1.124,xPulse}").as_deref(), Some("${F,2:1.9,Otra}.{F,2:1.4,Sys}$.{T,2:1.124,xPulse}"));
+        assert_eq!(m("$Ctl.Sys$.xPulse").as_deref(), Some("$Otra.Sys$.xPulse"));
+        assert_eq!(m("{F,2:1.1,Ctl}.{F,2:1.4,Sys}.{T,2:1.124,xPulse}").as_deref(), Some("{F,2:1.9,Otra}.{F,2:1.4,Sys}.{T,2:1.124,xPulse}"));
+        assert_eq!(m("TagDB.Ctl.Sys.Sub.x; Ctl.Sys2.y").as_deref(), Some("TagDB.Otra.Sys.Sub.x; Ctl.Sys2.y"));
+        assert_eq!(move_folder_text("{F,2:1.4,Sys}.{T,2:1.5,x}; TagDB.Sys.x", 4, "Sys", "A.Sys", &[], &dirs(&[(3, "A")])).unwrap().as_deref(), Some("{F,2:1.3,A}.{F,2:1.4,Sys}.{T,2:1.5,x}; TagDB.A.Sys.x"));
+    }
+
+    /// Mover carpetas en el ejemplo Modbus: una subcarpeta a otra carpeta, otra a la raíz y una a una carpeta nueva.
+    #[test]
+    fn moves_folders_in_panels_and_actions() {
+        let Some((mut db, mut streams)) = open("Compact_Modbus SL_M221_Book") else { return };
+        for (old, to) in [("MyController.Energy", "MyController.DateAndTime"), ("MyController.DateAndTime", ""), ("MyController.System", "Mcp.Sub")] {
+            let pre = format!("{old}.");
+            let vars: Vec<String> = db.vars.iter().filter(|v| v.name.starts_with(&pre)).map(|v| v.name.clone()).collect();
+            let before = scan(&db, &streams);
+            let uses: Vec<Vec<String>> = vars.iter().map(|n| uses_of(&before, n)).collect();
+            assert!(uses.iter().any(|u| !u.is_empty()), "{old}");
+            let f = db.find_folder(old).unwrap().clone();
+            let old_dirs = db.ancestors(f.parent);
+            let chains_before = chain_errors(&db, &streams);
+            let new = db.move_folder(old, to).unwrap();
+            let new_dirs = db.ancestors(db.find_folder(&new).unwrap().parent);
+            try_rename_in_streams(&mut streams, &|s| move_folder_text(s, f.id, old, &new, &old_dirs, &new_dirs)).unwrap();
+            assert!(chain_errors(&db, &streams) <= chains_before, "{old}");
+            assert!(placeholder_leftovers(&streams, old, true).is_empty(), "{old}");
+            let after = scan(&db, &streams);
+            for (n, u) in vars.iter().zip(&uses) {
+                let moved = format!("{new}{}", &n[old.len()..]);
+                assert_eq!(&uses_of(&after, &moved), u, "{n} → {moved}");
+                assert!(uses_of(&after, n).is_empty(), "{n}");
+            }
+            assert!(after.broken.is_empty(), "{old}");
+        }
+        assert!(db.find_var("DateAndTime.Energy.reTotalEnergy").is_some() && db.find_var("Mcp.Sub.System.xPulse").is_some());
+        assert!(db.move_folder("DateAndTime", "DateAndTime.Energy").unwrap_err().contains("dentro de sí misma"));
+        assert!(db.move_folder("Mcp.Sub.System", "Mcp.Sub").unwrap_err().contains("ya está"));
     }
 
     #[test]

@@ -1258,12 +1258,14 @@ mod live {
             ("MyController.Energy.reTotalEnergy", "MyController.DateAndTime", "MyController.DateAndTime.reTotalEnergy"),
             ("xRTCSyncDone", "Mcp.Sub", "Mcp.Sub.xRTCSyncDone"),
             ("MyController.DateAndTime.iGetRTCSec", "", "iGetRTCSec"),
+            // En la pantalla Start va como placeholder `${F,…}.{F,…}$.{T,…}`.
+            ("MyController.System.xStatManMode", "MyController.Energy", "MyController.Energy.xStatManMode"),
         ];
         let edits: Vec<serde_json::Value> = moves.iter().map(|(n, to, _)| serde_json::json!({"op": "move", "name": n, "to": to})).collect();
         let req: VariablesEditRequest = serde_json::from_value(serde_json::json!({"path": vdz, "edits": edits})).unwrap();
         let r = cfg.edit_file_variables(&req).unwrap();
         eprintln!("{:#?}", r.changes);
-        assert!(r.written && r.changes.len() == 3, "{r:?}");
+        assert!(r.written && r.changes.len() == 4, "{r:?}");
 
         let built = b.build().unwrap().build_file(&vdz, None).unwrap();
         assert_eq!(errs(&built.messages), errs(&base.messages), "{:?}", built.messages);
@@ -1287,6 +1289,66 @@ mod live {
         }
         let scripts: Vec<String> = vijeo_backend_vd63::vxml::targets(&doc).into_iter().flat_map(vijeo_backend_vd63::vxml::scripts).map(|s| s.2).collect();
         assert!(scripts.iter().any(|s| s.contains("iGetRTCSec.getIntValue()")) && !scripts.iter().any(|s| s.contains("DateAndTime.iGetRTCSec")), "{scripts:?}");
+        b.shutdown().unwrap();
+    }
+
+    /// Mover carpetas de variables sin Vijeo (`move_folder`) en una copia del ejemplo Modbus: `MyController.Energy` dentro
+    /// de `MyController.DateAndTime`, ésta (con la anterior dentro) a la raíz y `MyController.System` a una carpeta nueva.
+    /// La copia compila con los errores del original y, en el XML de Vijeo, cada variable de dentro está con su ruta nueva
+    /// en los mismos sitios que en el original.
+    #[test]
+    fn live_offline_move_folders() {
+        use vijeo_core::VariablesEditRequest;
+        let Some(src) = modbus() else { return };
+        let b = backend();
+        let cfg = b.config().unwrap();
+        let dir = work_dir("offline_move_folders");
+        let vdz = dir.join("McpMoverCarpetas.vdz");
+        std::fs::copy(&src, &vdz).unwrap();
+        let errs = |m: &[vijeo_core::BuildMessage]| {
+            let mut v: Vec<_> = m.iter().filter(|m| m.severity == vijeo_core::MessageSeverity::Error).map(|m| m.code).collect();
+            v.sort();
+            v
+        };
+        let base = b.build().unwrap().build_file(&src, None).unwrap();
+        let moves = [("MyController.Energy", "MyController.DateAndTime"), ("MyController.DateAndTime", ""), ("MyController.System", "Mcp.Sub")];
+        let edits: Vec<serde_json::Value> = moves.iter().map(|(p, to)| serde_json::json!({"op": "move_folder", "path": p, "to": to})).collect();
+        let req: VariablesEditRequest = serde_json::from_value(serde_json::json!({"path": vdz, "edits": edits})).unwrap();
+        let r = cfg.edit_file_variables(&req).unwrap();
+        eprintln!("{:#?}", r.changes);
+        assert!(r.written && r.changes.len() == 3, "{r:?}");
+
+        let built = b.build().unwrap().build_file(&vdz, None).unwrap();
+        assert_eq!(errs(&built.messages), errs(&base.messages), "{:?}", built.messages);
+
+        let info = b.projects().unwrap().open(&vdz).unwrap();
+        let out = b.reports().unwrap().export_xml(info.id, &dir.join("export"), true).unwrap();
+        b.projects().unwrap().close(info.id, false).unwrap();
+        let text = std::fs::read_to_string(&out.path).unwrap();
+        let doc = vijeo_backend_vd63::vxml::parse(&text).unwrap();
+        let orig_text = vijeo_backend_vd63::reports::decode_text(&std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/reference/vd-6.3/corpus/xml/Compact_Modbus SL_M221 Book.vxml")).unwrap());
+        let orig = vijeo_backend_vd63::vxml::parse(&orig_text).unwrap();
+        let refs = |doc: &roxmltree::Document| -> std::collections::BTreeMap<String, Vec<String>> {
+            vijeo_backend_vd63::vxml::targets(doc).into_iter().flat_map(vijeo_backend_vd63::vxml::cross_references).map(|r| (r.variable, r.references)).collect()
+        };
+        let (was, now) = (refs(&orig), refs(&doc));
+        // Ruta final de cada variable de las carpetas movidas.
+        let final_name = |n: &str| -> Option<String> {
+            [("MyController.Energy.", "DateAndTime.Energy."), ("MyController.DateAndTime.", "DateAndTime."), ("MyController.System.", "Mcp.Sub.System.")]
+                .iter()
+                .find_map(|(o, f)| n.strip_prefix(o).map(|rest| format!("{f}{rest}")))
+        };
+        let mut checked = 0;
+        for (n, w) in &was {
+            let Some(moved) = final_name(n) else { continue };
+            assert_eq!(now.get(&moved), Some(w), "{n} → {moved}");
+            assert!(!now.contains_key(n), "{n}");
+            checked += usize::from(!w.is_empty());
+        }
+        eprintln!("{checked} variables con usos comprobadas");
+        assert!(checked >= 15);
+        let scripts: Vec<String> = vijeo_backend_vd63::vxml::targets(&doc).into_iter().flat_map(vijeo_backend_vd63::vxml::scripts).map(|s| s.2).collect();
+        assert!(scripts.iter().any(|s| s.contains("Sys.setTime(DateAndTime.iGetRTCHour")) && !scripts.iter().any(|s| s.contains("MyController.DateAndTime")), "{scripts:?}");
         b.shutdown().unwrap();
     }
 

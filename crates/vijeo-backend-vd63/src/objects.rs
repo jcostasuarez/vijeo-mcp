@@ -351,6 +351,17 @@ impl Node {
     }
 
     /// Sustituye `old` por `new` dentro de las cadenas del objeto y de todo lo que contiene.
+    /// Cambia con `f` las cadenas del objeto y de todos sus hijos; devuelve cuántas cambiaron.
+    pub fn edit_all_strings(&mut self, f: &dyn Fn(&str) -> Option<String>) -> Result<usize, String> {
+        let mut n = self.edit_strings(f)?;
+        if let Node::Group { children, .. } = self {
+            for (_, c) in children {
+                n += c.edit_all_strings(f)?;
+            }
+        }
+        Ok(n)
+    }
+
     pub fn replace_all(&mut self, old: &str, new: &str) -> Result<usize, String> {
         let mut n = self.replace(old, new)?;
         if let Node::Group { children, .. } = self {
@@ -559,7 +570,7 @@ fn encode_string(s: &str, cstring: bool) -> Result<Vec<u8>, String> {
     }
 }
 
-fn edit_strings_in(v: &mut Vec<u8>, from: usize, f: &dyn Fn(&str) -> Option<String>) -> Result<usize, String> {
+pub fn edit_strings_in(v: &mut Vec<u8>, from: usize, f: &dyn Fn(&str) -> Option<String>) -> Result<usize, String> {
     let mut n = 0;
     let mut i = from;
     while i + 4 <= v.len() {

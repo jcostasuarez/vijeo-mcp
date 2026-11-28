@@ -177,6 +177,14 @@ fn smoke_list_and_catalog() {
             let (err, msg) = c.call("vdz_variable_edit", json!({"path": modbus, "save_as": out, "dry_run": true, "edits": edits}));
             assert!(err && msg.as_str().unwrap().contains("[invalid_argument]"), "{msg}");
         }
+        // Renombrar cambia también los usos (aquí sin escribir) y se niega con un nombre ya usado o con carpetas.
+        let (err, r) = c.call("vdz_variable_edit", json!({"path": modbus, "save_as": out, "dry_run": true, "edits": [{"op": "rename", "name": "MyController.Energy.reTotalEnergy", "new_name": "reEnergia"}]}));
+        assert!(!err && r["variables"][0]["name"] == "MyController.Energy.reEnergia", "{r}");
+        assert!(r["changes"][0].as_str().unwrap().contains("Panel «Energy» › DataDisplay «TotalEnergy»"), "{r}");
+        for new_name in ["iTimeSec", "A.b", "mal nombre"] {
+            let (err, msg) = c.call("vdz_variable_edit", json!({"path": modbus, "save_as": out, "dry_run": true, "edits": [{"op": "rename", "name": "MyController.Energy.reTotalEnergy", "new_name": new_name}]}));
+            assert!(err && msg.as_str().unwrap().contains("[invalid_argument]"), "{new_name}: {msg}");
+        }
         // El borrado se niega diciendo dónde se usa (pantalla y objeto).
         let (_, msg) = c.call("vdz_variable_edit", json!({"path": modbus, "save_as": out, "dry_run": true, "edits": [{"op": "delete", "name": "MyController.Energy.reTotalEnergy"}]}));
         assert!(msg.as_str().unwrap().contains("Panel «Energy» › DataDisplay «TotalEnergy»"), "{msg}");

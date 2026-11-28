@@ -174,6 +174,75 @@ fn links(s: &str) -> Vec<(char, u32, Option<String>, String)> {
     out
 }
 
+/// `s` con la variable `id` renombrada de `old` a `new` (nombres completos, misma carpeta): los enlaces
+/// `{T,2:1.<id>,Viejo}` y el nombre completo donde aparece como identificador (`TagDB.Carpeta.Viejo`,
+/// `Carpeta.Viejo.getIntValue()`, `Carpeta.Viejo.miembro`), no dentro de otro nombre (`Carpeta.Viejo2`).
+pub fn rename_text(s: &str, id: u32, old: &str, new: &str) -> Option<String> {
+    let leaf = |n: &str| n.rsplit('.').next().unwrap_or(n).to_owned();
+    let (old_leaf, new_leaf) = (leaf(old), leaf(new));
+    let out = s.replace(&format!("{{T,2:1.{id},{old_leaf}}}"), &format!("{{T,2:1.{id},{new_leaf}}}"));
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut rest = out.as_str();
+    let mut before = String::new();
+    while let Some(i) = rest.find(old) {
+        let (head, tail) = rest.split_at(i);
+        before.push_str(head);
+        let prev = before.chars().last();
+        let after = tail[old.len()..].chars().next();
+        let starts = match prev {
+            None => true,
+            Some('.') => before.ends_with("TagDB."),
+            Some(c) => !ident(c),
+        };
+        let ends = after.is_none_or(|c| !ident(c));
+        if starts && ends {
+            before.push_str(new);
+        } else {
+            before.push_str(old);
+        }
+        rest = &tail[old.len()..];
+    }
+    before.push_str(rest);
+    (before != s).then_some(before)
+}
+
+/// Streams que no se reescriben al renombrar: los textos que ve el usuario y las cachés de Vijeo.
+const RENAME_SKIP: [&str; 5] = ["/TagDatabase", "/NameServer", "/LangManagerData", "/StatusFlags", "/WindowObject"];
+
+/// Renombra la variable en los streams del target (`GraphicalObject` objeto por objeto; el resto, sus cadenas).
+/// Devuelve las rutas de los streams que cambiaron.
+pub fn rename_in_streams(streams: &mut [(String, Vec<u8>)], id: u32, old: &str, new: &str) -> Result<Vec<String>, String> {
+    let f = |s: &str| rename_text(s, id, old, new);
+    let mut changed = Vec::new();
+    for (path, b) in streams.iter_mut() {
+        let p = path.replace('\\', "/");
+        if RENAME_SKIP.iter().any(|x| p.ends_with(x)) {
+            continue;
+        }
+        let n = if p.ends_with("/GraphicalObject") {
+            match PanelObjects::parse(b) {
+                Ok(mut panel) => {
+                    let mut n = 0;
+                    for (_, o) in &mut panel.objects {
+                        n += o.edit_all_strings(&f).map_err(|e| format!("{path}: {e}"))?;
+                    }
+                    if n > 0 {
+                        *b = panel.stream();
+                    }
+                    n
+                }
+                Err(e) => return Err(format!("{path}: {e}")),
+            }
+        } else {
+            crate::objects::edit_strings_in(b, 0, &f).map_err(|e| format!("{path}: {e}"))?
+        };
+        if n > 0 {
+            changed.push(path.clone());
+        }
+    }
+    Ok(changed)
+}
+
 /// Sitios que impiden borrar `name`: los de la variable y los de sus miembros, salvo su propia definición (sus alarmas).
 pub fn uses_of(u: &Usage, name: &str) -> Vec<String> {
     let own = format!("Variables › Variable «{name}»");
@@ -290,6 +359,46 @@ mod tests {
         assert!(!broken.is_empty());
         assert!(broken.iter().all(|b| b.name == "reTotalEnergy"), "{broken:?}");
         assert!(broken.iter().any(|b| b.location == "Panel «Energy» › DataDisplay «TotalEnergy»"), "{broken:?}");
+    }
+
+    #[test]
+    fn renames_whole_identifiers_only() {
+        let r = |s: &str| rename_text(s, 157, "Carp.Var", "Carp.Nueva");
+        assert_eq!(r("{F,2:1.56,Carp}.{T,2:1.157,Var}").as_deref(), Some("{F,2:1.56,Carp}.{T,2:1.157,Nueva}"));
+        assert_eq!(r("{F,2:1.56,Carp}.{T,2:1.158,Var}"), None, "otro id");
+        assert_eq!(r("(TagDB.Carp.Var.getIntValue(0) != 0)").as_deref(), Some("(TagDB.Carp.Nueva.getIntValue(0) != 0)"));
+        assert_eq!(r("Carp.Var\n").as_deref(), Some("Carp.Nueva\n"));
+        assert_eq!(r("x = Carp.Var2 + Otra.Carp.Var + Carp.VarX;"), None);
+        assert_eq!(r("Carp.Var.miembro; Carp.Var").as_deref(), Some("Carp.Nueva.miembro; Carp.Nueva"));
+        let root = |s: &str| rename_text(s, 9, "xDone", "xHecho");
+        assert_eq!(root("!xDone").as_deref(), Some("!xHecho"));
+        assert_eq!(root("TagDB.xDone; A.xDone; xDoneX"), Some("TagDB.xHecho; A.xDone; xDoneX".to_owned()));
+    }
+
+    /// Renombrar en el ejemplo Modbus una variable de pantalla y otra que usan una acción global y su script: los mismos
+    /// sitios con el nombre nuevo, ninguno con el viejo y los paneles siguen leyéndose.
+    #[test]
+    fn renames_in_panels_and_actions() {
+        let Some((mut db, mut streams)) = open("Compact_Modbus SL_M221_Book") else { return };
+        for (old, leaf) in [("MyController.Energy.reTotalEnergy", "reEnergiaTotal"), ("MyController.DateAndTime.iGetRTCSec", "iSegundosRTC"), ("xRTCSyncDone", "xSincronizado")] {
+            let before = uses_of(&scan(&db, &streams), old);
+            assert!(!before.is_empty(), "{old}");
+            let id = db.find_var(old).unwrap().id;
+            let new = db.rename_variable(old, leaf).unwrap();
+            let changed = rename_in_streams(&mut streams, id, old, &new).unwrap();
+            assert!(!changed.is_empty(), "{old}");
+            let after = scan(&db, &streams);
+            assert_eq!(uses_of(&after, &new), before, "{old}");
+            assert!(uses_of(&after, old).is_empty() && after.broken.is_empty(), "{old}: {:?}", after.broken);
+        }
+        let actions = streams.iter().find(|(p, _)| p.ends_with("ActionsManagerStream")).unwrap();
+        let texts = crate::objects::strings_in(&actions.1, 0).join("\n");
+        assert!(texts.contains("{T,2:1.112,iSegundosRTC}") && texts.contains("xSincronizado") && !texts.contains("iGetRTCSec"), "{texts}");
+        for (p, b) in streams.iter().filter(|(p, _)| p.ends_with("GraphicalObject")) {
+            PanelObjects::parse(b).unwrap_or_else(|e| panic!("{p}: {e}"));
+        }
+        assert!(db.rename_variable("MyController.Energy.reEnergiaTotal", "iTimeSec").unwrap_err().contains("ya hay"));
+        assert!(db.rename_variable("MyController.Energy.reEnergiaTotal", "A.b").unwrap_err().contains("sin carpetas"));
     }
 
     #[test]

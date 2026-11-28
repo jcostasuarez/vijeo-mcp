@@ -2086,7 +2086,10 @@ impl ConfigOps for Vd63Backend {
 
         let mut cfb = swx::open_vdz(vdz)?;
         let (mut db, target) = read_tagdb(&mut cfb, req.target.as_deref())?;
-        let streams = if req.edits.iter().any(|e| matches!(e, VariableEdit::Delete { force: false, .. })) { target_streams(&mut cfb, db.active) } else { Vec::new() };
+        let need_streams = req.edits.iter().any(|e| matches!(e, VariableEdit::Delete { force: false, .. } | VariableEdit::Rename { .. }));
+        let mut streams = if need_streams { target_streams(&mut cfb, db.active) } else { Vec::new() };
+        // Streams que cambian al renombrar (además de TagDatabase y NameServer).
+        let mut rewritten: BTreeSet<String> = BTreeSet::new();
         let mut changes = Vec::new();
         let mut touched: Vec<String> = Vec::new();
         let names = |n: &str| -> VijeoResult<()> {
@@ -2126,6 +2129,35 @@ impl ConfigOps for Vd63Backend {
                     db.delete_variable(&v.name).map_err(fail)?;
                     changes.push(format!("borrada {}", v.name));
                 }
+                VariableEdit::Rename { name, new_name } => {
+                    validate::identifier(&format!("{field}.new_name"), new_name.trim())?;
+                    let v = db.find_var(name).cloned().ok_or_else(|| fail(format!("no hay ninguna variable «{}»", name.trim())))?;
+                    let before = usage::scan(&db, &streams);
+                    let old_uses = usage::uses_of(&before, &v.name);
+                    if let Some(p) = old_uses.iter().find(|l| l.starts_with("Variables › Variable «")) {
+                        return Err(fail(format!("«{}» se usa en {p}: el MCP todavía no reescribe las referencias indirectas; cámbiala en Vijeo", v.name)));
+                    }
+                    let new_full = db.rename_variable(&v.name, new_name).map_err(fail)?;
+                    let changed = usage::rename_in_streams(&mut streams, v.id, &v.name, &new_full).map_err(fail)?;
+                    // Mismos sitios que antes, ahora con el nombre nuevo, y ninguno con el viejo ni enlaces rotos a ella.
+                    let after = usage::scan(&db, &streams);
+                    let new_uses = usage::uses_of(&after, &new_full);
+                    let left = usage::uses_of(&after, &v.name);
+                    let broken: Vec<&usage::Broken> = after.broken.iter().filter(|b| b.id == v.id).collect();
+                    if new_uses != old_uses || !left.is_empty() || !broken.is_empty() {
+                        return Err(fail(format!(
+                            "no se pudo renombrar «{}» sin perder usos (antes: {}; después: {}; con el nombre viejo: {}; enlaces rotos: {}): no se escribió nada",
+                            v.name,
+                            old_uses.join("; "),
+                            new_uses.join("; "),
+                            left.join("; "),
+                            broken.len()
+                        )));
+                    }
+                    rewritten.extend(changed);
+                    changes.push(format!("renombrada {} → {new_full} (en {} sitio(s): {})", v.name, new_uses.len(), new_uses.join("; ")));
+                    touched.push(new_full);
+                }
                 VariableEdit::AddFolder { path } => {
                     names(path)?;
                     let created = db.add_folder(path).map_err(fail)?;
@@ -2146,6 +2178,9 @@ impl ConfigOps for Vd63Backend {
         let (tagdb_bytes, ns_bytes) = db.into_streams();
         swx::write_stream(&mut cfb, "/Services/TagDatabase", &tagdb_bytes)?;
         swx::write_stream(&mut cfb, "/Services/NameServer", &ns_bytes)?;
+        for (path, bytes) in streams.iter().filter(|(p, _)| rewritten.contains(p)) {
+            swx::write_stream(&mut cfb, &path.replace('\\', "/"), bytes)?;
+        }
         // Se escribe al lado del destino y sólo se reemplaza si al releerlo las variables son las esperadas.
         let tmp = dest.with_file_name(format!("{}.mcp-tmp", dest.file_name().unwrap_or_default().to_string_lossy()));
         let written = (|| {

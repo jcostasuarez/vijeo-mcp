@@ -1111,6 +1111,37 @@ impl TagDb {
         self.reindex()
     }
 
+    /// Cambia el nombre de una variable de primer nivel dentro de su carpeta (`Carpeta.Viejo` → `Carpeta.<new_leaf>`): sólo
+    /// su entrada de `NameServer`; el id no cambia. Devuelve el nombre completo nuevo.
+    pub fn rename_variable(&mut self, name: &str, new_leaf: &str) -> Result<String, String> {
+        let v = self.find_var(name.trim()).cloned().ok_or_else(|| format!("no hay ninguna variable «{name}» (los elementos de una estructura no se renombran)"))?;
+        let new_leaf = new_leaf.trim();
+        if new_leaf.contains('.') {
+            return Err("new_name es sólo el nombre, sin carpetas: la variable se queda en su carpeta".into());
+        }
+        let prefix = v.name.rsplit_once('.').map(|(p, _)| format!("{p}.")).unwrap_or_default();
+        let full = format!("{prefix}{new_leaf}");
+        if full == v.name {
+            return Err(format!("«{}» ya se llama así", v.name));
+        }
+        let taken = self.vars.iter().any(|o| o.id != v.id && o.name.eq_ignore_ascii_case(&full)) || self.find_folder(&full).is_some();
+        if taken {
+            return Err(format!("ya hay una variable o carpeta «{full}»"));
+        }
+        let name_id = get(&v.props, prop::NAME).and_then(Prop::int).ok_or("variable sin nombre")?;
+        let node = self.names.node_with_entry(name_id).ok_or_else(|| format!("el nombre {name_id} no está en NameServer"))?;
+        let &(_, _, pos, size) = self.names.nodes[node].entries.iter().find(|e| e.0 == name_id).unwrap();
+        let mut text = utf16_bytes(new_leaf);
+        text.extend([0, 0]);
+        let mut entry = name_id.to_le_bytes().to_vec();
+        entry.extend((text.len() as u32).to_le_bytes());
+        entry.extend(text);
+        self.ns.splice(pos..pos + size, entry);
+        self.names = NameServer::parse(&self.ns).ok_or("NameServer quedó ilegible")?;
+        self.reindex()?;
+        Ok(full)
+    }
+
     /// Borra una variable de primer nivel (con sus elementos, si es una instancia de estructura).
     pub fn delete_variable(&mut self, name: &str) -> Result<(), String> {
         let v = self.find_var(name.trim()).cloned().ok_or_else(|| format!("no hay ninguna variable «{name}» (los elementos se borran con su instancia)"))?;

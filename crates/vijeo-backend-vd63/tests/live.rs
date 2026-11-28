@@ -1082,6 +1082,83 @@ mod live {
         b.shutdown().unwrap();
     }
 
+    /// Alarmas sin Vijeo (`alarm` en add/set, `delete_alarm`) en una copia del ejemplo Modbus: alarmas nuevas (externa con
+    /// grupo, When Low y severidad; interna por defecto), cambios de mensaje y severidad, activar la desactivada del
+    /// ejemplo, desactivar, quitar y borrar una variable con alarma. La copia compila con los errores del original; en el
+    /// XML que exporta Vijeo cada alarma es como la lee el MCP, y lo que guarda Vijeo se relee igual.
+    #[test]
+    fn live_offline_alarms() {
+        use vijeo_core::{VariableInfo, VariablesEditRequest};
+        let Some(src) = modbus() else { return };
+        let b = backend();
+        let errs = |m: &[vijeo_core::BuildMessage]| {
+            let mut v: Vec<_> = m.iter().filter(|m| m.severity == vijeo_core::MessageSeverity::Error).map(|m| m.code).collect();
+            v.sort();
+            v
+        };
+        let base = b.build().unwrap().build_file(&src, None).unwrap();
+        let dir = work_dir("offline_alarms");
+        let vdz = dir.join("McpAlarmasModbus.vdz");
+        let cfg = b.config().unwrap();
+        let a = "MyController.Alarms";
+        let req: VariablesEditRequest = serde_json::from_value(serde_json::json!({
+            "path": src, "save_as": vdz, "overwrite": true,
+            "edits": [
+                {"op": "add", "name": "Mcp.AlarmaExterna", "data_type": "BOOL", "source": "External", "address": "%M300",
+                 "alarm": {"message": "Alarma MCP por bajo ñ", "trigger": "when low", "severity": 7, "group": "Motor1"}},
+                {"op": "add", "name": "McpAlarmaInterna", "data_type": "BOOL", "alarm": {"message": "Alarma MCP interna"}},
+                {"op": "set", "name": format!("{a}.xAlarmEStop_1"), "alarm": {"message": "Paro de emergencia (MCP)", "severity": 3}},
+                {"op": "set", "name": format!("{a}.xAlarmMcbTripMotor_3"), "alarm": {"enabled": true}},
+                {"op": "set", "name": format!("{a}.xAlarmEStop_2"), "description": "desactivada por el MCP", "alarm": {"enabled": false}},
+                {"op": "set", "name": format!("{a}.xAlarmFeedbackMotor_1"), "alarm": {"group": "None", "trigger": "when low"}},
+                {"op": "delete_alarm", "name": format!("{a}.xAlarmMcbMotor_1")},
+                {"op": "add", "name": "Mcp.Borrable", "data_type": "BOOL", "alarm": {"message": "se borra"}},
+                {"op": "delete", "name": "Mcp.Borrable"}
+            ]
+        }))
+        .unwrap();
+        let r = cfg.edit_file_variables(&req).unwrap();
+        eprintln!("{:#?}\n{:#?}", r.changes, r.variables);
+        assert!(r.written, "{r:?}");
+        // Sólo BOOL.
+        let numeric: VariablesEditRequest = serde_json::from_value(serde_json::json!({"path": vdz, "dry_run": true, "edits": [{"op": "set", "name": "MyController.Energy.iTimeSec", "alarm": {"message": "x"}}]})).unwrap();
+        assert!(cfg.edit_file_variables(&numeric).unwrap_err().to_string().contains("BOOL"));
+
+        let built = b.build().unwrap().build_file(&vdz, None).unwrap();
+        eprintln!("original: {:?}\ncopia: {:?}", base.messages, built.messages);
+        assert_eq!(errs(&built.messages), errs(&base.messages));
+
+        let offline = cfg.file_variables(&vdz, None, true, false).unwrap();
+        let info = b.projects().unwrap().open(&vdz).unwrap();
+        let xml = xml_variables(&b, info.id, &dir);
+        let by = |all: &[VariableInfo], n: &str| all.iter().find(|v| v.name == n).cloned();
+        let alarm = |v: &VariableInfo| v.extra.iter().filter(|(k, _)| k.starts_with("Alarm")).map(|(k, v)| (k.clone(), v.clone())).collect::<Vec<_>>();
+        let mut alarms = 0;
+        for o in &offline {
+            let x = by(&xml, &o.name).unwrap_or_else(|| panic!("{} no está en el XML", o.name));
+            assert_eq!(alarm(&x), alarm(o), "{}", o.name);
+            alarms += o.extra.contains_key("Alarm") as usize;
+        }
+        assert_eq!(xml.len(), cfg.file_variables(&vdz, None, false, false).unwrap().len());
+        let get = |n: &str, k: &str| by(&xml, n).and_then(|v| v.extra.get(k).cloned());
+        assert_eq!(get("Mcp.AlarmaExterna", "AlarmTriggerCondition").as_deref(), Some("When Low"));
+        assert_eq!(get("Mcp.AlarmaExterna", "AlarmMessage").as_deref(), Some("Alarma MCP por bajo ñ"));
+        assert_eq!(get(&format!("{a}.xAlarmEStop_1"), "AlarmSeverity").as_deref(), Some("3"));
+        assert_eq!(get(&format!("{a}.xAlarmMcbTripMotor_3"), "Alarm").as_deref(), Some("Enabled"));
+        assert_eq!(get(&format!("{a}.xAlarmEStop_2"), "Alarm").as_deref(), Some("Disabled"));
+        assert_eq!(get(&format!("{a}.xAlarmMcbMotor_1"), "Alarm"), None);
+        eprintln!("{alarms} alarmas iguales en el XML");
+
+        // Lo que guarda Vijeo se relee igual sin Vijeo.
+        let resaved = dir.join("McpAlarmasVijeo.vdz");
+        b.projects().unwrap().save(info.id, Some(&resaved), true).unwrap();
+        b.projects().unwrap().close(info.id, false).unwrap();
+        let again = cfg.file_variables(&resaved, None, true, false).unwrap();
+        let json = |v: &[VariableInfo]| serde_json::to_value(v).unwrap();
+        assert_eq!(json(&again), json(&offline));
+        b.shutdown().unwrap();
+    }
+
     /// Usos sin Vijeo: en una copia del ejemplo Modbus se borra con force una variable que usa una pantalla; los
     /// enlaces que quedan rotos son los que Vijeo marca al compilar.
     #[test]

@@ -17,7 +17,7 @@ use vijeo_ui::process;
 
 use crate::catalog::{split_hmi_type, Catalog};
 use crate::ui_project::{self, NewEquipment, NewTarget, Timeouts, UiProject};
-use crate::{dataconv, drivers, feedback, lint, objects, panel_ops, probe, reports, script, screens, swx, tagdb, toolchest, usage, validate, varcsv, vdz, vxml, xsd};
+use crate::{dataconv, drivers, feedback, langdb, lint, objects, panel_ops, probe, reports, script, screens, swx, tagdb, toolchest, usage, validate, varcsv, vdz, vxml, xsd};
 use crate::widgets::build::{self, RefKind};
 
 /// Esquema público del XML de proyecto, relativo a `Vijeo-Frame`.
@@ -2098,6 +2098,18 @@ impl ConfigOps for Vd63Backend {
             }
             Ok(())
         };
+        // Tabla de textos del target (mensajes de alarma): se carga si alguna operación la necesita.
+        let needs_lang = req.edits.iter().any(|e| {
+            matches!(e, VariableEdit::DeleteAlarm { .. } | VariableEdit::Delete { .. })
+                || matches!(e, VariableEdit::Add { settings, .. } | VariableEdit::Set { settings, .. } if settings.alarm.is_some())
+        });
+        let lang_loaded = if needs_lang { langdb::load(&mut cfb, db.active) } else { None };
+        let (lang_path, mut lang, lang_missing) = match lang_loaded {
+            Some((p, Ok(t))) => (Some(p), Some(t), String::new()),
+            Some((_, Err(e))) => (None, None, e),
+            None => (None, None, "el target no tiene tabla de textos (LangManager/LangManagerData): las alarmas no se cambian sin Vijeo".to_owned()),
+        };
+        let lang_before = lang.as_ref().map(|t| t.b.clone());
         for (i, e) in req.edits.iter().enumerate() {
             let field = format!("edits[{i}]");
             let fail = |m: String| VijeoError::invalid(&field, m);
@@ -2105,12 +2117,30 @@ impl ConfigOps for Vd63Backend {
                 VariableEdit::Add { name, data_type, settings } => {
                     names(name)?;
                     db.add_variable(name, data_type, &settings_of(settings)).map_err(fail)?;
-                    changes.push(format!("creada {} ({data_type})", name.trim()));
+                    let mut line = format!("creada {} ({data_type})", name.trim());
+                    if let Some(a) = &settings.alarm {
+                        let t = lang.as_mut().ok_or_else(|| fail(lang_missing.clone()))?;
+                        line += &format!(", alarma: {}", db.set_alarm(name, &alarm_of(a), t).map_err(fail)?);
+                    }
+                    changes.push(line);
                     touched.push(name.trim().to_owned());
                 }
                 VariableEdit::Set { name, settings } => {
-                    db.set_variable(name, &settings_of(settings)).map_err(fail)?;
-                    changes.push(format!("cambiada {}", name.trim()));
+                    let mut line = format!("cambiada {}", name.trim());
+                    if has_plain_settings(settings) || settings.alarm.is_none() {
+                        db.set_variable(name, &settings_of(settings)).map_err(fail)?;
+                    }
+                    if let Some(a) = &settings.alarm {
+                        let t = lang.as_mut().ok_or_else(|| fail(lang_missing.clone()))?;
+                        line += &format!(", alarma: {}", db.set_alarm(name, &alarm_of(a), t).map_err(fail)?);
+                    }
+                    changes.push(line);
+                    touched.push(name.trim().to_owned());
+                }
+                VariableEdit::DeleteAlarm { name } => {
+                    let t = lang.as_mut().ok_or_else(|| fail(lang_missing.clone()))?;
+                    db.delete_alarm(name, t).map_err(fail)?;
+                    changes.push(format!("quitada la alarma de {}", name.trim()));
                     touched.push(name.trim().to_owned());
                 }
                 VariableEdit::Delete { name, force } => {
@@ -2126,8 +2156,23 @@ impl ConfigOps for Vd63Backend {
                             )));
                         }
                     }
+                    let texts = db.alarm_text_ids(&v);
                     db.delete_variable(&v.name).map_err(fail)?;
-                    changes.push(format!("borrada {}", v.name));
+                    // Sus mensajes de alarma salen de la tabla de textos (si nadie más los usa).
+                    let mut line = format!("borrada {}", v.name);
+                    match lang.as_mut() {
+                        Some(t) => {
+                            let gone: Vec<u32> = texts.into_iter().filter(|&id| t.has(id) && !db.text_shared(id, v.id)).collect();
+                            for id in gone {
+                                t.remove(id).map_err(fail)?;
+                                line += " (con su mensaje de alarma)";
+                            }
+                            db.messages = t.texts();
+                        }
+                        None if !texts.is_empty() => notes.push(format!("{}: el mensaje de alarma de «{}» queda en la tabla de textos ({lang_missing})", field, v.name)),
+                        None => {}
+                    }
+                    changes.push(line);
                 }
                 VariableEdit::Rename { name, new_name } => {
                     validate::identifier(&format!("{field}.new_name"), new_name.trim())?;
@@ -2319,6 +2364,11 @@ impl ConfigOps for Vd63Backend {
         let (tagdb_bytes, ns_bytes) = db.into_streams();
         swx::write_stream(&mut cfb, "/Services/TagDatabase", &tagdb_bytes)?;
         swx::write_stream(&mut cfb, "/Services/NameServer", &ns_bytes)?;
+        if let (Some(p), Some(t)) = (&lang_path, &lang) {
+            if Some(&t.b) != lang_before.as_ref() {
+                swx::write_stream(&mut cfb, p, &t.b)?;
+            }
+        }
         for (path, bytes) in streams.iter().filter(|(p, _)| rewritten.contains(p)) {
             swx::write_stream(&mut cfb, &path.replace('\\', "/"), bytes)?;
         }
@@ -2370,6 +2420,7 @@ fn variables_of(cfb: &mut Cfb, target: Option<&str>, elements: bool, system: boo
     let mut out = Vec::new();
     for k in wanted {
         db.select(k)?;
+        load_messages(cfb, &mut db, k);
         out.extend(db.variables(&names[k], elements, system));
     }
     Ok(out)
@@ -2441,7 +2492,15 @@ fn read_tagdb(cfb: &mut Cfb, target: Option<&str>) -> VijeoResult<(tagdb::TagDb,
     let (mut db, names) = open_tagdb(cfb)?;
     let k = target_index(&names, target)?;
     db.select(k)?;
+    load_messages(cfb, &mut db, k);
     Ok((db, names[k].clone()))
+}
+
+/// Textos del target `k` (mensajes de alarma) en `db.messages`; si la tabla no está o no se reconoce, sin mensajes.
+fn load_messages(cfb: &mut Cfb, db: &mut tagdb::TagDb, k: usize) {
+    if let Some((_, Ok(t))) = langdb::load(cfb, k) {
+        db.messages = t.texts();
+    }
 }
 
 /// Ficheros del `.vdz` donde se buscan los usos de una variable del target `k`: todos menos los de los demás targets.
@@ -2460,6 +2519,15 @@ fn settings_of(s: &VariableSettings) -> tagdb::Settings {
         logging_group: s.logging_group.clone(),
         string_bytes: s.string_bytes,
     }
+}
+
+fn alarm_of(a: &vijeo_core::AlarmSettings) -> tagdb::AlarmSettings {
+    tagdb::AlarmSettings { enabled: a.enabled, message: a.message.clone(), trigger: a.trigger.clone(), severity: a.severity, group: a.group.clone() }
+}
+
+/// ¿Trae `set` algo además de la alarma?
+fn has_plain_settings(s: &VariableSettings) -> bool {
+    s.source.is_some() || s.scan_group.is_some() || s.address.is_some() || s.description.is_some() || s.initial_value.is_some() || s.logging_group.is_some() || s.string_bytes.is_some()
 }
 
 /// Misma ruta, sin distinguir mayúsculas ni el tipo de barra.

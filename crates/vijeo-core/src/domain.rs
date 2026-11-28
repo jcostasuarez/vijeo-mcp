@@ -604,6 +604,10 @@ pub enum VariableEdit {
         #[serde(default)]
         force: bool,
     },
+    /// Cambia el nombre de una variable (`Carpeta.Viejo`) dentro de su carpeta (`new_name`: sólo el nombre) y lo cambia
+    /// también donde se usa: pantallas, acciones, alarmas, scripts. Se niega si no puede dejar todos los usos con el
+    /// nombre nuevo (p. ej. si es el parámetro de una referencia indirecta).
+    Rename { name: String, new_name: String },
     /// Crea una carpeta (`A.B`, con las que falten).
     AddFolder { path: String },
     /// Borra una carpeta vacía.

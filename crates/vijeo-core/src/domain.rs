@@ -576,6 +576,31 @@ pub struct VariableSettings {
     /// Bytes de una STRING (por defecto 20 al crearla).
     #[serde(default)]
     pub string_bytes: Option<u32>,
+    /// Alarma de la variable (sólo BOOL): la crea (hace falta `message`) o cambia lo que se indique. Se quita con
+    /// `delete_alarm`.
+    #[serde(default)]
+    pub alarm: Option<AlarmSettings>,
+}
+
+/// Alarma de una variable BOOL en `vdz_variable_edit`. Lo que falta no se toca; al crearla: activa, `When High`,
+/// severidad 1 y sin grupo.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct AlarmSettings {
+    /// Activa o desactivada (desactivada conserva el mensaje y lo demás, como en Vijeo).
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Mensaje (una línea, como mucho 160 caracteres). Obligatorio al crearla.
+    #[serde(default)]
+    pub message: Option<String>,
+    /// `when high` o `when low`.
+    #[serde(default)]
+    pub trigger: Option<String>,
+    /// Severidad, de 1 (máxima) a 999.
+    #[serde(default)]
+    pub severity: Option<u32>,
+    /// Grupo de alarmas del target (`None` o vacío = sin grupo).
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 /// Una operación de `vdz_variable_edit`.
@@ -617,6 +642,8 @@ pub enum VariableEdit {
     /// Mueve una carpeta (`A.Sub`), con todo lo que contiene, dentro de la carpeta `to` (vacío = la raíz; las que falten se
     /// crean), con el mismo nombre, y lo cambia también donde se usa, con las mismas comprobaciones que `rename_folder`.
     MoveFolder { path: String, to: String },
+    /// Quita la alarma de una variable BOOL (y su mensaje de la tabla de textos).
+    DeleteAlarm { name: String },
     /// Crea una carpeta (`A.B`, con las que falten).
     AddFolder { path: String },
     /// Borra una carpeta vacía.

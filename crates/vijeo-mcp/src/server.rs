@@ -90,8 +90,9 @@ acciones y scripts que las usan) y borra variables y carpetas en un \
 .vdz (internas y externas, con dirección, grupo de escaneo, valor inicial, descripción). Para cambios de variables es \
 lo preferible a abrir el proyecto e importar un CSV. Como target_config_set, no escribe sobre proyectos abiertos en el \
 MCP; después, project_build con `path`. Cada target tiene sus variables: con varios, vdz_variable_list da todas (cada \
-una con su `target`) o las de `target`, y vdz_variable_edit pide `target`. Alarmas, estructuras y tipos de datos \
-todavía no. vdz_cross_references dice, también sin Vijeo (de un .vdz o de un proyecto abierto), dónde se usa cada \
+una con su `target`) o las de `target`, y vdz_variable_edit pide `target`. También las alarmas de las BOOL \
+(mensaje, activa, When High/When Low, severidad, grupo: `alarm` en add/set, op delete_alarm); las de límites de los \
+numéricos, estructuras y tipos de datos todavía no. vdz_cross_references dice, también sin Vijeo (de un .vdz o de un proyecto abierto), dónde se usa cada \
 variable (pantalla y objeto, acciones, alarmas, otras variables), cuáles no se usan y qué enlaces de las pantallas \
 apuntan a variables que ya no existen. vdz_panel_list lista, también sin Vijeo, las pantallas (paneles base con sus \
 carpetas, maestros y ventanas emergentes) con su número y su `panel_ref` para project_goto y las de pantallas.
@@ -925,7 +926,8 @@ impl VijeoServer {
     /// Variables leídas directamente de la base de variables (en un instante, sin el XML de Vijeo): de un .vdz sin
     /// abrirlo (`path`) o de un proyecto abierto (`project`, con lo que tenga sin guardar). Nombre con carpetas, target,
     /// tipo, origen, dirección, descripción y, en `extra`, grupo de escaneo, valor inicial, bytes de las STRING, grupos de
-    /// alarma y registro. Lo mismo que exporta Vijeo en el XML (comprobado variable por variable).
+    /// alarma y registro y la alarma (Alarm Enabled/Disabled, AlarmMessage, AlarmTriggerCondition, AlarmSeverity,
+    /// AlarmGroup). Lo mismo que exporta Vijeo en el XML (comprobado variable por variable).
     #[tool(annotations(read_only_hint = true, open_world_hint = false))]
     async fn vdz_variable_list(&self, Parameters(p): Parameters<VdzVariableListParams>) -> ToolResult<VariablesOut> {
         self.blocking(move |b| {
@@ -953,9 +955,10 @@ impl VijeoServer {
 
     /// Crea, cambia y borra variables y carpetas directamente en un .vdz, sin abrir Vijeo (en menos de un segundo).
     /// Operaciones (`op`): add (name `Carpeta.Nombre`, data_type BOOL/INT/UINT/DINT/UDINT/Integer/REAL/STRING, y
-    /// source, scan_group, address, description, initial_value, logging_group, string_bytes), set (los mismos ajustes,
+    /// source, scan_group, address, description, initial_value, logging_group, string_bytes y, en BOOL, alarm: {message,
+    /// enabled, trigger when high|when low, severity 1-999, group}; al crearla hace falta message), set (los mismos ajustes,
     /// también address/description de un miembro `Instancia.Miembro`), delete (se niega si pantallas, acciones, alarmas u
-    /// otras variables la usan, y dice dónde, como vdz_cross_references; con force la borra igual), rename (name `Carpeta.Viejo`, new_name sólo el nombre nuevo, en la misma carpeta: lo cambia también en pantallas, acciones, scripts y alarmas, y comprueba que quedan los mismos usos; se niega si una referencia indirecta puede llevar a ella), rename_folder (path `A.Vieja`, new_name: lo mismo para la carpeta y todo lo que contiene), move (name `A.Var`, to `B.C` o vacío para la raíz, que se crea si falta: la misma variable en otra carpeta, también donde se usa), move_folder (path `A.Sub`, to: igual con una carpeta y todo lo que contiene), add_folder, delete_folder (vacía). Se aplican en orden; si una falla no se escribe nada. El
+    /// otras variables la usan, y dice dónde, como vdz_cross_references; con force la borra igual), rename (name `Carpeta.Viejo`, new_name sólo el nombre nuevo, en la misma carpeta: lo cambia también en pantallas, acciones, scripts y alarmas, y comprueba que quedan los mismos usos; se niega si una referencia indirecta puede llevar a ella), rename_folder (path `A.Vieja`, new_name: lo mismo para la carpeta y todo lo que contiene), move (name `A.Var`, to `B.C` o vacío para la raíz, que se crea si falta: la misma variable en otra carpeta, también donde se usa), move_folder (path `A.Sub`, to: igual con una carpeta y todo lo que contiene), delete_alarm (name: quita la alarma y su mensaje), add_folder, delete_folder (vacía). Se aplican en orden; si una falla no se escribe nada. El
     /// fichero se relee y sólo se reemplaza si quedó como se esperaba. Después: project_build con `path` para comprobar.
     #[tool(annotations(destructive_hint = true, idempotent_hint = false, open_world_hint = false))]
     async fn vdz_variable_edit(&self, Parameters(p): Parameters<VariablesEditRequest>) -> ToolResult<VariablesEditResult> {

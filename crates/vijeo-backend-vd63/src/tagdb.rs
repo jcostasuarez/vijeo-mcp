@@ -41,10 +41,15 @@ pub mod prop {
     pub const INITIAL: u32 = 8;
     pub const ALARM: u32 = 0x0A;
     pub const ALARM_MESSAGE: u32 = 0x0B;
+    /// Condición de una alarma de BOOL (tipo 12): 2 = When Low; sin ella, When High.
+    pub const ALARM_TRIGGER: u32 = 0x0C;
+    /// Severidad de la alarma (tipo 3); sin ella, 1.
+    pub const ALARM_SEVERITY: u32 = 0x10;
     pub const INPUT_RANGE: u32 = 0x14;
     pub const MIN: u32 = 0x15;
     pub const MAX: u32 = 0x16;
-    pub const SEVERITY: u32 = 0x26;
+    /// Byte a 1 en toda variable con alarma de un proyecto 6.3 (Import Variables y SET03); no sale en el XML.
+    pub const ALARM_FLAG: u32 = 0x26;
     pub const BYTES: u32 = 0x29;
     pub const ADDRESS: u32 = 0x2B;
     pub const ALARM_GROUP: u32 = 0x4D;
@@ -360,6 +365,8 @@ pub struct TagDb {
     pub targets: usize,
     /// Target cuyo bloque se lee y se edita (`select`): sus variables, carpetas y grupos están en los campos de arriba.
     pub active: usize,
+    /// Textos del target activo (`LangManagerData`: id → texto) para los mensajes de alarma; vacío si no se cargaron.
+    pub messages: BTreeMap<u32, String>,
 }
 
 fn bad(what: &str) -> VijeoError {
@@ -384,6 +391,7 @@ impl TagDb {
             groups: BTreeMap::new(),
             targets: 0,
             active: 0,
+            messages: BTreeMap::new(),
         };
         db.index()?;
         Ok(db)
@@ -395,6 +403,7 @@ impl TagDb {
             return Err(bad(&format!("el target {index} (la base tiene {})", self.targets)));
         }
         self.active = index;
+        self.messages.clear();
         self.index()
     }
 
@@ -586,10 +595,22 @@ impl TagDb {
             put("InitialValue", if data_type == "BOOL" { Some(if initial.as_deref().is_some_and(|v| v != "0") { "Enabled".into() } else { "Disabled".into() }) } else { initial });
         }
         put("ScanGroup", self.group("scan", int(prop::SCAN_GROUP)));
-        put("AlarmGroup", int(prop::ALARM).filter(|&a| a != 0).and_then(|_| self.group("alarm", int(prop::ALARM_GROUP))));
         // Como en el XML: alarmas definidas (con su mensaje), también las deshabilitadas (sin 0x0A). Verificado con BOOL.
         let alarms = props.iter().filter(|p| p.id == prop::ALARM_MESSAGE).count();
         put("Alarms", (alarms > 0).then(|| alarms.to_string()));
+        if alarms > 0 {
+            let enabled = int(prop::ALARM).is_some_and(|a| a != 0);
+            put("Alarm", Some(if enabled { "Enabled" } else { "Disabled" }.into()));
+            put("AlarmMessage", int(prop::ALARM_MESSAGE).and_then(|id| self.messages.get(&id).cloned()));
+            // El XML sólo da condición, grupo y severidad de las alarmas activas.
+            if enabled {
+                put("AlarmGroup", Some(self.group("alarm", int(prop::ALARM_GROUP)).unwrap_or_else(|| "None".into())));
+                put("AlarmSeverity", Some(int(prop::ALARM_SEVERITY).unwrap_or(1).to_string()));
+                if data_type == "BOOL" {
+                    put("AlarmTriggerCondition", Some(if int(prop::ALARM_TRIGGER) == Some(2) { "When Low" } else { "When High" }.into()));
+                }
+            }
+        }
         put("LoggingGroup", self.group("logging", int(prop::LOGGING_GROUP)));
         put("NoOfBytes", int(prop::BYTES).map(|n| n.to_string()));
         put("Sharing", int(prop::SHARING).map(|s| if s == 2 { "Read Only".to_owned() } else { s.to_string() }));
@@ -789,12 +810,28 @@ pub struct Settings {
     pub string_bytes: Option<u32>,
 }
 
+/// Alarma de una variable BOOL al crearla o cambiarla. `None` = no se toca (al crearla: activa, When High, severidad 1,
+/// sin grupo).
+#[derive(Debug, Clone, Default)]
+pub struct AlarmSettings {
+    pub enabled: Option<bool>,
+    pub message: Option<String>,
+    /// `when high` / `when low`.
+    pub trigger: Option<String>,
+    pub severity: Option<u32>,
+    /// Grupo de alarmas; vacío o `None` = sin grupo.
+    pub group: Option<String>,
+}
+
+/// Propiedades de la alarma de una variable.
+const ALARM_PROPS: [u32; 6] = [prop::ALARM, prop::ALARM_MESSAGE, prop::ALARM_TRIGGER, prop::ALARM_SEVERITY, prop::ALARM_FLAG, prop::ALARM_GROUP];
+
 /// Tipos que se pueden crear y su código.
 pub const CREATABLE_TYPES: [(&str, u32); 8] = [("BOOL", 0), ("INT", 8), ("UINT", 9), ("DINT", 10), ("UDINT", 11), ("Integer", 7), ("REAL", 2), ("STRING", 3)];
 
 /// Propiedades que dicen qué es la variable o cómo se configura: al tomar otra variable del mismo tipo como plantilla,
 /// sólo se copian las demás (formato, límites por defecto…).
-const SETTING_PROPS: [u32; 18] = [
+const SETTING_PROPS: [u32; 20] = [
     prop::TYPE,
     prop::NAME,
     prop::DESCRIPTION,
@@ -805,7 +842,9 @@ const SETTING_PROPS: [u32; 18] = [
     prop::INPUT_RANGE,
     prop::MIN,
     prop::MAX,
-    prop::SEVERITY,
+    prop::ALARM_FLAG,
+    prop::ALARM_TRIGGER,
+    prop::ALARM_SEVERITY,
     prop::BYTES,
     prop::ADDRESS,
     prop::ALARM_GROUP,
@@ -1282,6 +1321,152 @@ impl TagDb {
     }
 
     /// Borra una variable de primer nivel (con sus elementos, si es una instancia de estructura).
+    /// Ids de los mensajes de alarma de una variable y de sus elementos (los textos que hay que quitar al borrarla).
+    pub fn alarm_text_ids(&self, v: &Var) -> Vec<u32> {
+        let ids = |props: &[Prop]| props.iter().filter(|p| p.id == prop::ALARM_MESSAGE).filter_map(Prop::int).collect::<Vec<_>>();
+        let mut out = ids(&v.props);
+        for e in self.elements(v) {
+            out.extend(ids(&e.props));
+        }
+        out.retain(|&id| id != u32::MAX);
+        out
+    }
+
+    /// ¿Hay otra variable (u otro elemento) del target, aparte de `except`, cuyo mensaje de alarma es el texto `id`?
+    pub fn text_shared(&self, id: u32, except: u32) -> bool {
+        self.vars.iter().filter(|v| v.id != except).any(|v| self.alarm_text_ids(v).contains(&id))
+    }
+
+    /// Crea o cambia la alarma de una variable BOOL (las de límites de los numéricos todavía no). El mensaje va a la tabla
+    /// de textos del target (`lang`). Como Import Variables de Vijeo 6.3: 0x0A activa, 0x0B id del mensaje, 0x0C = 2
+    /// When Low, 0x10 severidad (sin ella, 1), 0x26 = 1, 0x4D grupo (sin él, None). Devuelve qué se hizo.
+    pub fn set_alarm(&mut self, name: &str, a: &AlarmSettings, lang: &mut crate::langdb::LangTable) -> Result<String, String> {
+        let v = self.find_var(name.trim()).cloned().ok_or_else(|| format!("no hay ninguna variable «{}» (las alarmas de elementos de estructura no se cambian sin Vijeo)", name.trim()))?;
+        let ty = self.data_type_name(get(&v.props, prop::TYPE).and_then(Prop::int));
+        if ty != "BOOL" {
+            return Err(format!("«{}» es {ty}: sin Vijeo sólo se definen alarmas de variables BOOL (las de límites de los numéricos todavía no)", v.name));
+        }
+        if get(&v.props, prop::INDIRECT).is_some_and(|p| p.int() != Some(0)) {
+            return Err(format!("«{}» es una referencia indirecta: no se edita sin Vijeo", v.name));
+        }
+        let mut props = v.props.clone();
+        let old = get(&props, prop::ALARM_MESSAGE).and_then(Prop::int).filter(|&id| id != u32::MAX && lang.has(id));
+        let creating = old.is_none();
+        let message = match &a.message {
+            Some(m) => {
+                let m = m.trim();
+                if m.is_empty() || m.chars().count() > 160 || m.chars().any(char::is_control) {
+                    return Err("el mensaje de alarma no puede estar vacío, tiene como mucho 160 caracteres y va en una línea".into());
+                }
+                Some(m.to_owned())
+            }
+            None if creating => return Err(format!("«{}» no tiene alarma: para crearla hace falta alarm.message", v.name)),
+            None => None,
+        };
+        // Primero lo que puede fallar.
+        let trigger = match a.trigger.as_deref().map(|t| t.trim().to_ascii_lowercase()) {
+            None => None,
+            Some(t) if t == "when high" || t == "high" => Some(false),
+            Some(t) if t == "when low" || t == "low" => Some(true),
+            Some(t) => return Err(format!("alarm.trigger «{t}»: when high o when low")),
+        };
+        if let Some(s) = a.severity {
+            if !(1..=999).contains(&s) {
+                return Err("alarm.severity: de 1 (máxima) a 999".into());
+            }
+        }
+        let group = match a.group.as_deref().map(str::trim) {
+            None => None,
+            Some(g) if g.is_empty() || g.eq_ignore_ascii_case("None") => Some(None),
+            Some(g) => Some(Some(self.group_id("alarm", g)?)),
+        };
+        let mut done = Vec::new();
+        match (old, &message) {
+            (Some(id), Some(m)) if lang.text(id) != Some(m.as_str()) => {
+                if self.text_shared(id, v.id) {
+                    let new = lang.add(m)?;
+                    set(&mut props, Prop::u32_value(prop::ALARM_MESSAGE, 6, new));
+                } else {
+                    lang.set(id, m)?;
+                }
+                done.push(format!("mensaje «{m}»"));
+            }
+            (None, Some(m)) => {
+                let id = lang.add(m)?;
+                set(&mut props, Prop::u32_value(prop::ALARM_MESSAGE, 6, id));
+                set(&mut props, Prop::byte_value(prop::ALARM_FLAG, 1));
+                done.push(format!("mensaje «{m}»"));
+            }
+            _ => {}
+        }
+        if a.enabled.unwrap_or(creating) {
+            if get(&props, prop::ALARM).and_then(Prop::int) != Some(1) {
+                done.push("activada".into());
+            }
+            set(&mut props, Prop::byte_value(prop::ALARM, 1));
+        } else if a.enabled == Some(false) {
+            if get(&props, prop::ALARM).is_some() {
+                done.push("desactivada (conserva mensaje, condición, grupo y severidad)".into());
+            }
+            props.retain(|p| p.id != prop::ALARM);
+        }
+        match trigger {
+            Some(true) => {
+                set(&mut props, Prop::u32_value(prop::ALARM_TRIGGER, 12, 2));
+                done.push("condición When Low".into());
+            }
+            Some(false) => {
+                props.retain(|p| p.id != prop::ALARM_TRIGGER);
+                done.push("condición When High".into());
+            }
+            None => {}
+        }
+        match a.severity {
+            Some(1) => props.retain(|p| p.id != prop::ALARM_SEVERITY),
+            Some(s) => set(&mut props, Prop::u32_value(prop::ALARM_SEVERITY, 3, s)),
+            None => {}
+        }
+        if let Some(s) = a.severity {
+            done.push(format!("severidad {s}"));
+        }
+        match group {
+            Some(Some(id)) => {
+                set(&mut props, Prop::u32_value(prop::ALARM_GROUP, 0x14, id));
+                done.push(format!("grupo {}", self.groups["alarm"][&id]));
+            }
+            Some(None) => {
+                props.retain(|p| p.id != prop::ALARM_GROUP);
+                done.push("sin grupo (None)".into());
+            }
+            None => {}
+        }
+        self.messages = lang.texts();
+        splice(&mut self.b, v.at + 12, v.props_end, &encode_props(&props));
+        self.reindex()?;
+        Ok(if done.is_empty() { "sin cambios".into() } else { done.join(", ") })
+    }
+
+    /// Quita la alarma de una variable (y su mensaje de la tabla de textos, si nadie más lo usa).
+    pub fn delete_alarm(&mut self, name: &str, lang: &mut crate::langdb::LangTable) -> Result<(), String> {
+        let v = self.find_var(name.trim()).cloned().ok_or_else(|| format!("no hay ninguna variable «{}»", name.trim()))?;
+        if get(&v.props, prop::ALARM_MESSAGE).is_none() && get(&v.props, prop::ALARM).is_none() {
+            return Err(format!("«{}» no tiene alarma", v.name));
+        }
+        let ty = self.data_type_name(get(&v.props, prop::TYPE).and_then(Prop::int));
+        if ty != "BOOL" {
+            return Err(format!("«{}» es {ty}: sin Vijeo sólo se quitan alarmas de variables BOOL", v.name));
+        }
+        let text = get(&v.props, prop::ALARM_MESSAGE).and_then(Prop::int).filter(|&id| lang.has(id) && !self.text_shared(id, v.id));
+        let mut props = v.props.clone();
+        props.retain(|p| !ALARM_PROPS.contains(&p.id));
+        if let Some(id) = text {
+            lang.remove(id)?;
+        }
+        self.messages = lang.texts();
+        splice(&mut self.b, v.at + 12, v.props_end, &encode_props(&props));
+        self.reindex()
+    }
+
     pub fn delete_variable(&mut self, name: &str) -> Result<(), String> {
         let v = self.find_var(name.trim()).cloned().ok_or_else(|| format!("no hay ninguna variable «{name}» (los elementos se borran con su instancia)"))?;
         let name_id = get(&v.props, prop::NAME).and_then(Prop::int).ok_or("variable sin nombre")?;
@@ -1584,13 +1769,23 @@ mod tests {
         let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/reference/vd-6.3/corpus/xml");
         let examples = std::path::Path::new(MODBUS).parent().unwrap();
         let integer_format = ["BitWidth", "DataFormat", "DataLength", "OffsetBitNo", "Signed"];
-        for (v, x) in [("Compact_Hardwired_M221", "Compact_Hardwired_M221"), ("Compact_Modbus SL_M221_Book", "Compact_Modbus SL_M221 Book"), ("MaterialWork_Drill_HW_M221", "Material Working_Drill machine_H"), ("Packaging_TempCtrl_HW_M221", "Packaging_TempCtrl_HW_M221")] {
-            let (vdz, xml) = (examples.join(format!("{v}.vdz")), corpus.join(format!("{x}.vxml")));
+        let mine = corpus.parent().unwrap().to_owned();
+        let mut checked_alarms = 0;
+        for (v, x) in [
+            ("Compact_Hardwired_M221", "Compact_Hardwired_M221"),
+            ("Compact_Modbus SL_M221_Book", "Compact_Modbus SL_M221 Book"),
+            ("MaterialWork_Drill_HW_M221", "Material Working_Drill machine_H"),
+            ("Packaging_TempCtrl_HW_M221", "Packaging_TempCtrl_HW_M221"),
+            ("McpAlarmas", "McpAlarmas"),
+        ] {
+            let dir = if v.starts_with("Mcp") { &mine } else { examples };
+            let (vdz, xml) = (dir.join(format!("{v}.vdz")), corpus.join(format!("{x}.vxml")));
             if !vdz.is_file() || !xml.is_file() {
                 continue;
             }
             let mut c = crate::swx::open_vdz(&vdz).unwrap();
-            let db = TagDb::parse(crate::swx::stream(&mut c, "/Services/TagDatabase").unwrap(), crate::swx::stream(&mut c, "/Services/NameServer").unwrap()).unwrap();
+            let mut db = TagDb::parse(crate::swx::stream(&mut c, "/Services/TagDatabase").unwrap(), crate::swx::stream(&mut c, "/Services/NameServer").unwrap()).unwrap();
+            db.messages = crate::langdb::load(&mut c, 0).unwrap().1.unwrap().texts();
             let text = crate::reports::decode_text(&std::fs::read(&xml).unwrap());
             let doc = crate::vxml::parse(&text).unwrap();
             let want = crate::vxml::variables(crate::vxml::targets(&doc)[0]);
@@ -1599,11 +1794,94 @@ mod tests {
             for w in &want {
                 let g = got.iter().find(|g| g.name == w.name).unwrap_or_else(|| panic!("{v}: falta {}", w.name));
                 for k in w.extra.keys().chain(g.extra.keys()) {
-                    let skip = k == "AlarmGroup" || (w.data_type == "Integer" && w.source == "External" && integer_format.contains(&k.as_str()));
+                    let skip = w.data_type == "Integer" && w.source == "External" && integer_format.contains(&k.as_str());
                     assert!(skip || w.extra.get(k) == g.extra.get(k), "{v} {} {k}: XML {:?} offline {:?}", w.name, w.extra.get(k), g.extra.get(k));
                 }
+                checked_alarms += w.extra.contains_key("AlarmMessage") as usize;
             }
         }
+        if examples.is_dir() {
+            assert!(checked_alarms > 50, "{checked_alarms} alarmas comparadas");
+        }
+    }
+
+    /// Proyecto hecho con Import Variables (`docs/`): AlHigh, AlLow (When Low), AlSev5 (severidad 5), AlLow999 y
+    /// SinAlarma, todas internas y sin grupo.
+    fn alarm_project() -> Option<(TagDb, crate::langdb::LangTable)> {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/reference/vd-6.3/corpus/McpAlarmas.vdz");
+        if !p.is_file() {
+            return None;
+        }
+        let mut c = crate::swx::open_vdz(&p).unwrap();
+        let mut db = TagDb::parse(crate::swx::stream(&mut c, "/Services/TagDatabase").unwrap(), crate::swx::stream(&mut c, "/Services/NameServer").unwrap()).unwrap();
+        let lang = crate::langdb::load(&mut c, 0).unwrap().1.unwrap();
+        db.messages = lang.texts();
+        Some((db, lang))
+    }
+
+    fn reread(db: TagDb, lang: &crate::langdb::LangTable) -> TagDb {
+        let (b, ns) = db.into_streams();
+        let mut again = TagDb::parse(b, ns).unwrap();
+        again.messages = crate::langdb::LangTable::parse(lang.b.clone()).unwrap().texts();
+        again
+    }
+
+    /// Crear una alarma como la deja Import Variables: mismas propiedades que AlLow999 y el mensaje en la tabla.
+    #[test]
+    fn creates_alarms_like_import_variables() {
+        let Some((mut db, mut lang)) = alarm_project() else { return };
+        let want: Vec<Prop> = db.find_var("AlLow999").unwrap().props.iter().filter(|p| p.id != prop::NAME && p.id != prop::ALARM_MESSAGE).cloned().collect();
+        let a = AlarmSettings { message: Some("Nueva por bajo".into()), trigger: Some("when low".into()), severity: Some(999), ..Default::default() };
+        db.set_alarm("SinAlarma", &a, &mut lang).unwrap();
+        let got = db.find_var("SinAlarma").unwrap().props.clone();
+        assert_eq!(got.iter().filter(|p| p.id != prop::NAME && p.id != prop::ALARM_MESSAGE).cloned().collect::<Vec<_>>(), want);
+        let id = get(&got, prop::ALARM_MESSAGE).and_then(Prop::int).unwrap();
+        assert_eq!(id, 20, "el siguiente id de texto del proyecto");
+        let db = reread(db, &lang);
+        let all = db.variables("", false, false);
+        let v = find(&all, "SinAlarma");
+        assert_eq!(v.extra.get("AlarmMessage").map(String::as_str), Some("Nueva por bajo"));
+        assert_eq!(v.extra.get("AlarmTriggerCondition").map(String::as_str), Some("When Low"));
+        assert_eq!(v.extra.get("AlarmSeverity").map(String::as_str), Some("999"));
+        assert_eq!(v.extra.get("AlarmGroup").map(String::as_str), Some("None"));
+        assert_eq!(v.extra.get("Alarm").map(String::as_str), Some("Enabled"));
+    }
+
+    /// Cambiar, desactivar y quitar; con un grupo que no existe, error sin tocar nada.
+    #[test]
+    fn changes_disables_and_deletes_alarms() {
+        let Some((mut db, mut lang)) = alarm_project() else { return };
+        let original = db.b.clone();
+        let texts = lang.entries.len();
+        assert!(db.set_alarm("AlHigh", &AlarmSettings { group: Some("NoExiste".into()), ..Default::default() }, &mut lang).unwrap_err().contains("AlarmGroup1"));
+        assert!(db.set_alarm("SinAlarma", &AlarmSettings::default(), &mut lang).unwrap_err().contains("message"));
+        assert_eq!(db.b, original);
+        let a = AlarmSettings { message: Some("Cambiado".into()), trigger: Some("when low".into()), severity: Some(1), group: Some("AlarmGroup1".into()), ..Default::default() };
+        db.set_alarm("AlSev5", &a, &mut lang).unwrap();
+        db.set_alarm("AlLow", &AlarmSettings { enabled: Some(false), ..Default::default() }, &mut lang).unwrap();
+        db.delete_alarm("AlHigh", &mut lang).unwrap();
+        assert_eq!(lang.entries.len(), texts - 1);
+        assert!(db.delete_alarm("AlHigh", &mut lang).is_err());
+        let db = reread(db, &lang);
+        let all = db.variables("", false, false);
+        let s5 = &find(&all, "AlSev5").extra;
+        assert_eq!((s5["AlarmMessage"].as_str(), s5["AlarmTriggerCondition"].as_str(), s5["AlarmSeverity"].as_str(), s5["AlarmGroup"].as_str()), ("Cambiado", "When Low", "1", "AlarmGroup1"));
+        let low = &find(&all, "AlLow").extra;
+        assert_eq!((low["Alarm"].as_str(), low["AlarmMessage"].as_str()), ("Disabled", "Alarma por bajo"));
+        assert!(!low.contains_key("AlarmTriggerCondition"));
+        assert!(!find(&all, "AlHigh").extra.keys().any(|k| k.starts_with("Alarm")));
+        // Volver a activarla deja la condición que tenía.
+        let mut db = db;
+        db.set_alarm("AlLow", &AlarmSettings { enabled: Some(true), ..Default::default() }, &mut lang).unwrap();
+        assert_eq!(find(&db.variables("", false, false), "AlLow").extra["AlarmTriggerCondition"], "When Low");
+    }
+
+    /// Sin Vijeo sólo alarmas de BOOL.
+    #[test]
+    fn refuses_alarms_of_numeric_variables() {
+        let Some((mut db, mut lang)) = alarm_project() else { return };
+        db.add_variable("Numero", "INT", &Settings::default()).unwrap();
+        assert!(db.set_alarm("Numero", &AlarmSettings { message: Some("x".into()), ..Default::default() }, &mut lang).unwrap_err().contains("BOOL"));
     }
 
     /// Proyecto de prueba con dos targets (Primero y Segundo, hecho con Vijeo): `Comun` en los dos (INT y DINT) y una

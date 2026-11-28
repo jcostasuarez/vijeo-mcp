@@ -167,6 +167,19 @@ fn variable(v: Node, name: String, target: &str) -> VariableInfo {
     if alarms > 0 {
         extra.insert("Alarms".into(), alarms.to_string());
     }
+    // La alarma (de un BOOL: una): activa si lleva condición o severidad; las desactivadas sólo traen el mensaje.
+    if let Some(a) = elements(v).find(|c| c.has_tag_name("Alarm")) {
+        let enabled = ["AlarmTriggerCondition", "AlarmSeverity"].iter().any(|k| a.attribute(*k).is_some());
+        extra.insert("Alarm".into(), if enabled { "Enabled" } else { "Disabled" }.into());
+        if let Some(m) = child(a, "Message").and_then(text_of).filter(|m| !m.is_empty()) {
+            extra.insert("AlarmMessage".into(), m);
+        }
+        for k in ["AlarmGroup", "AlarmSeverity", "AlarmTriggerCondition"] {
+            if let Some(val) = attr(a, k).filter(|_| enabled) {
+                extra.insert(k.into(), val);
+            }
+        }
+    }
     VariableInfo {
         target: target.to_owned(),
         name,

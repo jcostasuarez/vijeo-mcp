@@ -472,7 +472,7 @@ pub fn first_language(doc: &Document) -> Option<String> {
 }
 
 /// Identificadores con puntos (`a.b.c`) de un texto.
-fn identifiers(s: &str) -> impl Iterator<Item = &str> {
+pub(crate) fn identifiers(s: &str) -> impl Iterator<Item = &str> {
     s.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')).map(|t| t.trim_matches('.')).filter(|t| t.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_'))
 }
 

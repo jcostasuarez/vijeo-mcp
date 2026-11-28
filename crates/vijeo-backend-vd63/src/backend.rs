@@ -6,7 +6,7 @@
 //! interfaz: menús, asistentes, el Navigator y Export Project para leer variables, paneles y acciones del
 //! `.vxml`. El nombre del proyecto es sólo el de la entrada `.SwxCF` del `.vdz`: lo pone el MCP al empaquetar.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, TryLockError};
@@ -17,7 +17,7 @@ use vijeo_ui::process;
 
 use crate::catalog::{split_hmi_type, Catalog};
 use crate::ui_project::{self, NewEquipment, NewTarget, Timeouts, UiProject};
-use crate::{dataconv, drivers, feedback, lint, objects, panel_ops, probe, reports, script, swx, tagdb, toolchest, validate, varcsv, vdz, vxml, xsd};
+use crate::{dataconv, drivers, feedback, lint, objects, panel_ops, probe, reports, script, swx, tagdb, toolchest, usage, validate, varcsv, vdz, vxml, xsd};
 use crate::widgets::build::{self, RefKind};
 
 /// Esquema público del XML de proyecto, relativo a `Vijeo-Frame`.
@@ -212,7 +212,6 @@ impl Vd63Backend {
             Capability::TargetManage,
             Capability::Build,
             Capability::Reports,
-            Capability::CrossReferences,
             Capability::VariableLookup,
             Capability::PanelList,
             // El formato de lo que se escribe sólo está verificado con 6.3.
@@ -2024,6 +2023,22 @@ impl ConfigOps for Vd63Backend {
         variables_of(&mut swx::open_swx(&swx_path)?, target, elements, system)
     }
 
+    fn file_usage(&self, vdz: &Path, target: Option<&str>, system: bool) -> VijeoResult<VariableUsage> {
+        self.require(Capability::OfflineVariables)?;
+        check_vdz_input("path", vdz)?;
+        usage_of(&mut swx::open_vdz(vdz)?, target, system)
+    }
+
+    fn project_usage(&self, p: ProjectId, target: Option<&str>, system: bool) -> VijeoResult<VariableUsage> {
+        self.require(Capability::OfflineVariables)?;
+        let inst = self.get(p)?;
+        let swx_path = inst.with_ui("vdz_cross_references", |u| {
+            u.save()?;
+            Ok(u.swx())
+        })?;
+        usage_of(&mut swx::open_swx(&swx_path)?, target, system)
+    }
+
     fn edit_file_variables(&self, req: &VariablesEditRequest) -> VijeoResult<VariablesEditResult> {
         self.require(Capability::OfflineVariables)?;
         let vdz = req.path.as_path();
@@ -2088,7 +2103,7 @@ impl ConfigOps for Vd63Backend {
                 VariableEdit::Delete { name, force } => {
                     let v = db.find_var(name).cloned().ok_or_else(|| fail(format!("no hay ninguna variable «{}»", name.trim())))?;
                     if !force {
-                        let used = tagdb::usages(&streams, &v.name, v.id);
+                        let used = usage::uses_of(&usage::scan(&db, &streams), &v.name);
                         if !used.is_empty() {
                             return Err(fail(format!(
                                 "«{}» se nombra en {} parte(s) del proyecto ({}): cámbialas antes, o borra con force: true (Vijeo dará error en lo que la use)",
@@ -2174,6 +2189,31 @@ fn variables_of(cfb: &mut Cfb, target: Option<&str>, elements: bool, system: boo
     Ok(out)
 }
 
+/// Uso de las variables de `target` (sin él, de todos los targets).
+fn usage_of(cfb: &mut Cfb, target: Option<&str>, system: bool) -> VijeoResult<VariableUsage> {
+    let (mut db, names) = open_tagdb(cfb)?;
+    let wanted: Vec<usize> = match target {
+        Some(t) => vec![target_index(&names, Some(t))?],
+        None => (0..names.len()).collect(),
+    };
+    let mut out = VariableUsage { references: Vec::new(), broken: Vec::new() };
+    for k in wanted {
+        db.select(k)?;
+        let mut u = usage::scan(&db, &target_streams(cfb, k));
+        let with_members: BTreeSet<String> = u.references.keys().filter_map(|n| n.rsplit_once('.')).map(|(p, _)| p.to_owned()).collect();
+        for v in db.variables(&names[k], true, system) {
+            let mut references: Vec<String> = u.references.remove(&v.name).map(|s| s.into_iter().collect()).unwrap_or_default();
+            // Una instancia de estructura se usa si se usa alguno de sus miembros (cada uno sale aparte).
+            if references.is_empty() && with_members.contains(&v.name) && db.find_var(&v.name).is_some() {
+                references.push(format!("(miembros de «{}»)", v.name));
+            }
+            out.references.push(CrossReference { target: names[k].clone(), variable: v.name, references });
+        }
+        out.broken.extend(u.broken.into_iter().map(|b| BrokenLink { target: names[k].clone(), location: b.location, name: b.name, id: b.id }));
+    }
+    Ok(out)
+}
+
 /// Posición de `target` entre los del proyecto (sin distinguir mayúsculas); sin él, el único que hay.
 fn target_index(names: &[String], target: Option<&str>) -> VijeoResult<usize> {
     match target {
@@ -2255,11 +2295,6 @@ impl ReportOps for Vd63Backend {
     fn actions(&self, p: ProjectId, target: Option<&str>) -> VijeoResult<Vec<ActionInfo>> {
         self.require(Capability::Reports)?;
         self.from_vxml(p, target, vxml::global_actions)
-    }
-
-    fn cross_references(&self, p: ProjectId, target: Option<&str>) -> VijeoResult<Vec<CrossReference>> {
-        self.require(Capability::CrossReferences)?;
-        self.from_vxml(p, target, vxml::cross_references)
     }
 
     fn lint_scripts(&self, p: ProjectId, target: Option<&str>, script: Option<&str>) -> VijeoResult<Vec<ScriptLint>> {

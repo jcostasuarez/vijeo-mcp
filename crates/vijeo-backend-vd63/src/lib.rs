@@ -15,6 +15,7 @@ pub mod toolchest;
 pub mod widgets;
 pub mod swx;
 pub mod tagdb;
+pub mod usage;
 mod ui_project;
 mod validate;
 pub mod varcsv;

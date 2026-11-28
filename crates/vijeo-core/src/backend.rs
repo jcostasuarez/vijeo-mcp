@@ -183,6 +183,11 @@ pub trait ConfigOps: Send + Sync {
     fn file_variables(&self, vdz: &Path, target: Option<&str>, elements: bool, system: bool) -> VijeoResult<Vec<VariableInfo>>;
     /// Lo mismo sobre un proyecto abierto: guarda su copia de trabajo en Vijeo (sin tocar el `.vdz`) y la lee.
     fn project_variables(&self, p: ProjectId, target: Option<&str>, elements: bool, system: bool) -> VijeoResult<Vec<VariableInfo>>;
+    /// Dónde se usa cada variable de un `.vdz` (pantallas y sus objetos, acciones, alarmas, otras variables…), sin
+    /// Vijeo, y qué enlaces apuntan a variables que ya no existen. Con `system`, también las variables del sistema.
+    fn file_usage(&self, vdz: &Path, target: Option<&str>, system: bool) -> VijeoResult<VariableUsage>;
+    /// Lo mismo sobre un proyecto abierto: guarda su copia de trabajo en Vijeo (sin tocar el `.vdz`) y la lee.
+    fn project_usage(&self, p: ProjectId, target: Option<&str>, system: bool) -> VijeoResult<VariableUsage>;
     /// Crea, cambia y borra variables y carpetas directamente en un `.vdz`, sin Vijeo.
     fn edit_file_variables(&self, req: &VariablesEditRequest) -> VijeoResult<VariablesEditResult>;
 }
@@ -195,8 +200,6 @@ pub trait ReportOps: Send + Sync {
     fn panels(&self, p: ProjectId, target: Option<&str>) -> VijeoResult<Vec<PanelReport>>;
     /// Acciones globales.
     fn actions(&self, p: ProjectId, target: Option<&str>) -> VijeoResult<Vec<ActionInfo>>;
-    /// Dónde se usa cada variable (incluye las que no se usan, con `references` vacío).
-    fn cross_references(&self, p: ProjectId, target: Option<&str>) -> VijeoResult<Vec<CrossReference>>;
     /// Revisa los scripts del proyecto o, con `script`, ese texto contra las variables del target.
     fn lint_scripts(&self, p: ProjectId, target: Option<&str>, script: Option<&str>) -> VijeoResult<Vec<ScriptLint>>;
 }

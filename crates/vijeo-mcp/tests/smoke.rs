@@ -177,7 +177,20 @@ fn smoke_list_and_catalog() {
             let (err, msg) = c.call("vdz_variable_edit", json!({"path": modbus, "save_as": out, "dry_run": true, "edits": edits}));
             assert!(err && msg.as_str().unwrap().contains("[invalid_argument]"), "{msg}");
         }
+        // El borrado se niega diciendo dónde se usa (pantalla y objeto).
+        let (_, msg) = c.call("vdz_variable_edit", json!({"path": modbus, "save_as": out, "dry_run": true, "edits": [{"op": "delete", "name": "MyController.Energy.reTotalEnergy"}]}));
+        assert!(msg.as_str().unwrap().contains("Panel «Energy» › DataDisplay «TotalEnergy»"), "{msg}");
+
+        let (err, x) = c.call("vdz_cross_references", json!({"path": modbus, "variable": "reTotalEnergy"}));
+        assert!(!err && x["count"] == 1 && x["broken"].as_array().unwrap().is_empty(), "{x}");
+        assert!(x["references"][0]["references"].as_array().unwrap().iter().any(|l| l == "Panel «Energy» › DataDisplay «TotalEnergy»"), "{x}");
+        let (err, all) = c.call("vdz_cross_references", json!({"path": modbus}));
+        assert!(!err && all["count"].as_u64().unwrap() > 100 && !all["unused"].as_array().unwrap().is_empty(), "{all}");
     }
+    // project_cross_references (del XML de Vijeo) se quitó: vdz_cross_references hace lo mismo sin Vijeo.
+    assert!(names.contains(&"vdz_cross_references") && !names.contains(&"project_cross_references"));
+    let (err, msg) = c.call("vdz_cross_references", json!({}));
+    assert!(err && msg.as_str().unwrap().contains("project/path"), "{msg}");
 
     // project_show_in_vijeo: los errores se detectan antes de lanzar Vijeo (ninguno de estos lo lanza).
     assert!(names.contains(&"project_show_in_vijeo"));

@@ -608,6 +608,9 @@ pub enum VariableEdit {
     /// también donde se usa: pantallas, acciones, alarmas, scripts. Se niega si no puede dejar todos los usos con el
     /// nombre nuevo (p. ej. si es el parámetro de una referencia indirecta).
     Rename { name: String, new_name: String },
+    /// Cambia el nombre de una carpeta (`A.Vieja`) dentro de su carpeta padre (`new_name`: sólo el nombre) y el de todo lo
+    /// que contiene, también donde se usa, con las mismas comprobaciones que `rename`.
+    RenameFolder { path: String, new_name: String },
     /// Crea una carpeta (`A.B`, con las que falten).
     AddFolder { path: String },
     /// Borra una carpeta vacía.

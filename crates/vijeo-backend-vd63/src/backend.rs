@@ -2086,7 +2086,7 @@ impl ConfigOps for Vd63Backend {
 
         let mut cfb = swx::open_vdz(vdz)?;
         let (mut db, target) = read_tagdb(&mut cfb, req.target.as_deref())?;
-        let need_streams = req.edits.iter().any(|e| matches!(e, VariableEdit::Delete { force: false, .. } | VariableEdit::Rename { .. }));
+        let need_streams = req.edits.iter().any(|e| matches!(e, VariableEdit::Delete { force: false, .. } | VariableEdit::Rename { .. } | VariableEdit::RenameFolder { .. }));
         let mut streams = if need_streams { target_streams(&mut cfb, db.active) } else { Vec::new() };
         // Streams que cambian al renombrar (además de TagDatabase y NameServer).
         let mut rewritten: BTreeSet<String> = BTreeSet::new();
@@ -2137,8 +2137,11 @@ impl ConfigOps for Vd63Backend {
                     if let Some(p) = old_uses.iter().find(|l| l.starts_with("Variables › Variable «")) {
                         return Err(fail(format!("«{}» se usa en {p}: el MCP todavía no reescribe las referencias indirectas; cámbiala en Vijeo", v.name)));
                     }
+                    if let Some((by, t)) = db.indirect_hit(&v.name, false) {
+                        return Err(fail(format!("la referencia indirecta de «{by}» ({t}) puede llevar a «{}»: renombrarla la dejaría sin destino; cámbiala en Vijeo", v.name)));
+                    }
                     let new_full = db.rename_variable(&v.name, new_name).map_err(fail)?;
-                    let changed = usage::rename_in_streams(&mut streams, v.id, &v.name, &new_full).map_err(fail)?;
+                    let changed = usage::rename_in_streams(&mut streams, &|s| usage::rename_text(s, v.id, &v.name, &new_full)).map_err(fail)?;
                     // Mismos sitios que antes, ahora con el nombre nuevo, y ninguno con el viejo ni enlaces rotos a ella.
                     let after = usage::scan(&db, &streams);
                     let new_uses = usage::uses_of(&after, &new_full);
@@ -2157,6 +2160,46 @@ impl ConfigOps for Vd63Backend {
                     rewritten.extend(changed);
                     changes.push(format!("renombrada {} → {new_full} (en {} sitio(s): {})", v.name, new_uses.len(), new_uses.join("; ")));
                     touched.push(new_full);
+                }
+                VariableEdit::RenameFolder { path, new_name } => {
+                    validate::identifier(&format!("{field}.new_name"), new_name.trim())?;
+                    let folder = db.find_folder(path.trim().trim_matches('.')).cloned().ok_or_else(|| fail(format!("no hay ninguna carpeta «{}»", path.trim())))?;
+                    let inside = |db: &tagdb::TagDb, p: &str| -> Vec<String> {
+                        let pre = format!("{p}.");
+                        db.vars.iter().filter(|v| !v.system && v.name.starts_with(&pre)).map(|v| v.name.clone()).collect()
+                    };
+                    let before = usage::scan(&db, &streams);
+                    let old_vars = inside(&db, &folder.path);
+                    let old_uses: Vec<Vec<String>> = old_vars.iter().map(|n| usage::uses_of(&before, n)).collect();
+                    if let Some((n, p)) = old_vars.iter().zip(&old_uses).find_map(|(n, u)| u.iter().find(|l| l.starts_with("Variables › Variable «")).map(|p| (n, p))) {
+                        return Err(fail(format!("«{n}» se usa en {p}: el MCP todavía no reescribe las referencias indirectas; cámbiala en Vijeo")));
+                    }
+                    if let Some((by, t)) = db.indirect_hit(&folder.path, true) {
+                        return Err(fail(format!("la referencia indirecta de «{by}» ({t}) puede llevar a lo que hay en «{}»: renombrarla la dejaría sin destino; cámbialo en Vijeo", folder.path)));
+                    }
+                    let new_path = db.rename_folder(&folder.path, new_name).map_err(fail)?;
+                    let changed = usage::rename_in_streams(&mut streams, &|s| usage::rename_folder_text(s, folder.id, &folder.path, &new_path)).map_err(fail)?;
+                    let after = usage::scan(&db, &streams);
+                    let moved = |n: &str| format!("{new_path}{}", &n[folder.path.len()..]);
+                    let lost: Vec<String> = old_vars
+                        .iter()
+                        .zip(&old_uses)
+                        .filter(|(n, u)| usage::uses_of(&after, &moved(n)) != **u || !usage::uses_of(&after, n).is_empty())
+                        .map(|(n, _)| n.clone())
+                        .collect();
+                    let broken = after.broken.len() > before.broken.len();
+                    if !lost.is_empty() || broken {
+                        return Err(fail(format!(
+                            "no se pudo renombrar la carpeta «{}» sin perder usos ({}{}): no se escribió nada",
+                            folder.path,
+                            if lost.is_empty() { String::new() } else { format!("de {}", lost.join(", ")) },
+                            if broken { "; quedarían enlaces rotos" } else { "" }
+                        )));
+                    }
+                    let sites: usize = old_uses.iter().map(Vec::len).sum();
+                    rewritten.extend(changed);
+                    changes.push(format!("renombrada la carpeta {} → {new_path} ({} variable(s), {sites} uso(s))", folder.path, old_vars.len()));
+                    touched.extend(old_vars.iter().map(|n| moved(n)));
                 }
                 VariableEdit::AddFolder { path } => {
                     names(path)?;

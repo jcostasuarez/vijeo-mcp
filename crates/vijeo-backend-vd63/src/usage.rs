@@ -178,9 +178,19 @@ fn links(s: &str) -> Vec<(char, u32, Option<String>, String)> {
 /// `{T,2:1.<id>,Viejo}` y el nombre completo donde aparece como identificador (`TagDB.Carpeta.Viejo`,
 /// `Carpeta.Viejo.getIntValue()`, `Carpeta.Viejo.miembro`), no dentro de otro nombre (`Carpeta.Viejo2`).
 pub fn rename_text(s: &str, id: u32, old: &str, new: &str) -> Option<String> {
+    rename_ident(s, 'T', id, old, new)
+}
+
+/// `s` con la carpeta `id` renombrada de `old` a `new` (rutas completas, mismo padre): los enlaces `{F,2:1.<id>,Vieja}`
+/// y la ruta al principio de los nombres de lo que contiene (`TagDB.Vieja.Var` → `TagDB.Nueva.Var`).
+pub fn rename_folder_text(s: &str, id: u32, old: &str, new: &str) -> Option<String> {
+    rename_ident(s, 'F', id, old, new)
+}
+
+fn rename_ident(s: &str, kind: char, id: u32, old: &str, new: &str) -> Option<String> {
     let leaf = |n: &str| n.rsplit('.').next().unwrap_or(n).to_owned();
     let (old_leaf, new_leaf) = (leaf(old), leaf(new));
-    let out = s.replace(&format!("{{T,2:1.{id},{old_leaf}}}"), &format!("{{T,2:1.{id},{new_leaf}}}"));
+    let out = s.replace(&format!("{{{kind},2:1.{id},{old_leaf}}}"), &format!("{{{kind},2:1.{id},{new_leaf}}}"));
     let ident = |c: char| c.is_alphanumeric() || c == '_';
     let mut rest = out.as_str();
     let mut before = String::new();
@@ -194,7 +204,8 @@ pub fn rename_text(s: &str, id: u32, old: &str, new: &str) -> Option<String> {
             Some('.') => before.ends_with("TagDB."),
             Some(c) => !ident(c),
         };
-        let ends = after.is_none_or(|c| !ident(c));
+        // Una variable acaba ahí (o sigue un método o un miembro); una carpeta siempre va seguida de lo que contiene.
+        let ends = if kind == 'F' { after == Some('.') } else { after.is_none_or(|c| !ident(c)) };
         if starts && ends {
             before.push_str(new);
         } else {
@@ -209,10 +220,9 @@ pub fn rename_text(s: &str, id: u32, old: &str, new: &str) -> Option<String> {
 /// Streams que no se reescriben al renombrar: los textos que ve el usuario y las cachés de Vijeo.
 const RENAME_SKIP: [&str; 5] = ["/TagDatabase", "/NameServer", "/LangManagerData", "/StatusFlags", "/WindowObject"];
 
-/// Renombra la variable en los streams del target (`GraphicalObject` objeto por objeto; el resto, sus cadenas).
+/// Aplica `f` (un renombrado) a los streams del target (`GraphicalObject` objeto por objeto; el resto, sus cadenas).
 /// Devuelve las rutas de los streams que cambiaron.
-pub fn rename_in_streams(streams: &mut [(String, Vec<u8>)], id: u32, old: &str, new: &str) -> Result<Vec<String>, String> {
-    let f = |s: &str| rename_text(s, id, old, new);
+pub fn rename_in_streams(streams: &mut [(String, Vec<u8>)], f: &dyn Fn(&str) -> Option<String>) -> Result<Vec<String>, String> {
     let mut changed = Vec::new();
     for (path, b) in streams.iter_mut() {
         let p = path.replace('\\', "/");
@@ -224,7 +234,7 @@ pub fn rename_in_streams(streams: &mut [(String, Vec<u8>)], id: u32, old: &str, 
                 Ok(mut panel) => {
                     let mut n = 0;
                     for (_, o) in &mut panel.objects {
-                        n += o.edit_all_strings(&f).map_err(|e| format!("{path}: {e}"))?;
+                        n += o.edit_all_strings(f).map_err(|e| format!("{path}: {e}"))?;
                     }
                     if n > 0 {
                         *b = panel.stream();
@@ -234,7 +244,7 @@ pub fn rename_in_streams(streams: &mut [(String, Vec<u8>)], id: u32, old: &str, 
                 Err(e) => return Err(format!("{path}: {e}")),
             }
         } else {
-            crate::objects::edit_strings_in(b, 0, &f).map_err(|e| format!("{path}: {e}"))?
+            crate::objects::edit_strings_in(b, 0, f).map_err(|e| format!("{path}: {e}"))?
         };
         if n > 0 {
             changed.push(path.clone());
@@ -385,7 +395,7 @@ mod tests {
             assert!(!before.is_empty(), "{old}");
             let id = db.find_var(old).unwrap().id;
             let new = db.rename_variable(old, leaf).unwrap();
-            let changed = rename_in_streams(&mut streams, id, old, &new).unwrap();
+            let changed = rename_in_streams(&mut streams, &|s| rename_text(s, id, old, &new)).unwrap();
             assert!(!changed.is_empty(), "{old}");
             let after = scan(&db, &streams);
             assert_eq!(uses_of(&after, &new), before, "{old}");
@@ -399,6 +409,45 @@ mod tests {
         }
         assert!(db.rename_variable("MyController.Energy.reEnergiaTotal", "iTimeSec").unwrap_err().contains("ya hay"));
         assert!(db.rename_variable("MyController.Energy.reEnergiaTotal", "A.b").unwrap_err().contains("sin carpetas"));
+    }
+
+    #[test]
+    fn renames_folder_prefixes_only() {
+        let r = |s: &str| rename_folder_text(s, 4, "Ctl.Sys", "Ctl.Sistema");
+        assert_eq!(r("{F,2:1.1,Ctl}.{F,2:1.4,Sys}.{T,2:1.124,xPulse}").as_deref(), Some("{F,2:1.1,Ctl}.{F,2:1.4,Sistema}.{T,2:1.124,xPulse}"));
+        assert_eq!(r("(TagDB.Ctl.Sys.xPulse.getIntValue(0) != 0)").as_deref(), Some("(TagDB.Ctl.Sistema.xPulse.getIntValue(0) != 0)"));
+        assert_eq!(r("Ctl.Sys2.x; Ctl.Sys; A.Ctl.Sys.x"), None, "otra carpeta, la carpeta sola, otra ruta");
+        assert_eq!(r("{F,2:1.5,Sys}"), None, "otro id");
+    }
+
+    /// Renombrar en el ejemplo Modbus una subcarpeta y la carpeta raíz de casi todo: cada variable de dentro conserva sus
+    /// usos con su nombre nuevo.
+    #[test]
+    fn renames_folders_in_panels_and_actions() {
+        let Some((mut db, mut streams)) = open("Compact_Modbus SL_M221_Book") else { return };
+        for (old, leaf) in [("MyController.Energy", "Energia"), ("MyController", "Controlador")] {
+            let pre = format!("{old}.");
+            let vars: Vec<String> = db.vars.iter().filter(|v| v.name.starts_with(&pre)).map(|v| v.name.clone()).collect();
+            let before = scan(&db, &streams);
+            let uses: Vec<Vec<String>> = vars.iter().map(|n| uses_of(&before, n)).collect();
+            assert!(uses.iter().any(|u| !u.is_empty()), "{old}");
+            let id = db.find_folder(old).unwrap().id;
+            let new = db.rename_folder(old, leaf).unwrap();
+            rename_in_streams(&mut streams, &|s| rename_folder_text(s, id, old, &new)).unwrap();
+            let after = scan(&db, &streams);
+            for (n, u) in vars.iter().zip(&uses) {
+                let moved = format!("{new}{}", &n[old.len()..]);
+                assert_eq!(&uses_of(&after, &moved), u, "{n} → {moved}");
+                assert!(uses_of(&after, n).is_empty(), "{n}");
+            }
+            assert!(after.broken.is_empty());
+        }
+        let actions = streams.iter().find(|(p, _)| p.ends_with("ActionsManagerStream")).unwrap();
+        let texts = crate::objects::strings_in(&actions.1, 0).join("\n");
+        assert!(texts.contains("TagDB.Controlador.DateAndTime.iGetRTCSec") && !texts.contains("MyController"), "{texts}");
+        assert!(db.rename_folder("Controlador", "Alarms").is_ok(), "no choca con la carpeta Controlador.Alarms, que es de otro nivel");
+        assert!(db.rename_folder("NoExiste", "x").unwrap_err().contains("no hay"));
+        assert!(db.rename_folder("Alarms.Alarms", "Energia").unwrap_err().contains("ya hay"), "hermana con ese nombre");
     }
 
     #[test]

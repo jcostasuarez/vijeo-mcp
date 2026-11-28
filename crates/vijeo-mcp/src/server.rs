@@ -86,7 +86,7 @@ antes, y project_build con `path` después para comprobarlo. La puerta de enlace
 valida (en los modelos con `dual_ethernet`, la de la ETH2, que no se cambia).
 - Variables sin abrir Vijeo (modo rápido, en un instante): vdz_variable_list las lee de un .vdz (o de un proyecto \
 abierto con `project`, incluido lo no guardado) y vdz_variable_edit crea, cambia, renombra (también en las pantallas, \
-acciones y scripts que la usan) y borra variables y carpetas en un \
+acciones y scripts que las usan) y borra variables y carpetas en un \
 .vdz (internas y externas, con dirección, grupo de escaneo, valor inicial, descripción). Para cambios de variables es \
 lo preferible a abrir el proyecto e importar un CSV. Como target_config_set, no escribe sobre proyectos abiertos en el \
 MCP; después, project_build con `path`. Cada target tiene sus variables: con varios, vdz_variable_list da todas (cada \
@@ -955,7 +955,7 @@ impl VijeoServer {
     /// Operaciones (`op`): add (name `Carpeta.Nombre`, data_type BOOL/INT/UINT/DINT/UDINT/Integer/REAL/STRING, y
     /// source, scan_group, address, description, initial_value, logging_group, string_bytes), set (los mismos ajustes,
     /// también address/description de un miembro `Instancia.Miembro`), delete (se niega si pantallas, acciones, alarmas u
-    /// otras variables la usan, y dice dónde, como vdz_cross_references; con force la borra igual), rename (name `Carpeta.Viejo`, new_name sólo el nombre nuevo, en la misma carpeta: lo cambia también en pantallas, acciones, scripts y alarmas, y comprueba que quedan los mismos usos), add_folder, delete_folder (vacía). Se aplican en orden; si una falla no se escribe nada. El
+    /// otras variables la usan, y dice dónde, como vdz_cross_references; con force la borra igual), rename (name `Carpeta.Viejo`, new_name sólo el nombre nuevo, en la misma carpeta: lo cambia también en pantallas, acciones, scripts y alarmas, y comprueba que quedan los mismos usos; se niega si una referencia indirecta puede llevar a ella), rename_folder (path `A.Vieja`, new_name: lo mismo para la carpeta y todo lo que contiene), add_folder, delete_folder (vacía). Se aplican en orden; si una falla no se escribe nada. El
     /// fichero se relee y sólo se reemplaza si quedó como se esperaba. Después: project_build con `path` para comprobar.
     #[tool(annotations(destructive_hint = true, idempotent_hint = false, open_world_hint = false))]
     async fn vdz_variable_edit(&self, Parameters(p): Parameters<VariablesEditRequest>) -> ToolResult<VariablesEditResult> {

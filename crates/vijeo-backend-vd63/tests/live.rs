@@ -1174,6 +1174,67 @@ mod live {
         b.shutdown().unwrap();
     }
 
+    /// Renombrar carpetas de variables sin Vijeo (`rename_folder`) en una copia del ejemplo Modbus: `MyController.Energy`
+    /// (pantalla Energy) y `MyController.DateAndTime` (acción global con script, smart objects). La copia compila con los
+    /// errores del original y, en el XML de Vijeo, cada variable de dentro está con su ruta nueva en los mismos sitios que
+    /// en el original. Se niega con `MyController`, que nombra la referencia indirecta de `wRefComErrorCode`.
+    #[test]
+    fn live_offline_rename_folders() {
+        use vijeo_core::VariablesEditRequest;
+        let Some(src) = modbus() else { return };
+        let b = backend();
+        let cfg = b.config().unwrap();
+        let dir = work_dir("offline_rename_folders");
+        let vdz = dir.join("McpCarpetasVar.vdz");
+        std::fs::copy(&src, &vdz).unwrap();
+        let errs = |m: &[vijeo_core::BuildMessage]| {
+            let mut v: Vec<_> = m.iter().filter(|m| m.severity == vijeo_core::MessageSeverity::Error).map(|m| m.code).collect();
+            v.sort();
+            v
+        };
+        let base = b.build().unwrap().build_file(&src, None).unwrap();
+        let pairs = [("MyController.Energy", "Energia"), ("MyController.DateAndTime", "FechaHora")];
+        let edits: Vec<serde_json::Value> = pairs.iter().map(|(p, n)| serde_json::json!({"op": "rename_folder", "path": p, "new_name": n})).collect();
+        let req: VariablesEditRequest = serde_json::from_value(serde_json::json!({"path": vdz, "edits": edits})).unwrap();
+        let r = cfg.edit_file_variables(&req).unwrap();
+        eprintln!("{:#?}", r.changes);
+        assert!(r.written && r.changes.len() == 2, "{r:?}");
+        let root: VariablesEditRequest =
+            serde_json::from_value(serde_json::json!({"path": vdz, "dry_run": true, "edits": [{"op": "rename_folder", "path": "MyController", "new_name": "Ctl"}]})).unwrap();
+        let e = cfg.edit_file_variables(&root).unwrap_err();
+        assert!(e.to_string().contains("wRefComErrorCode"), "{e}");
+
+        let built = b.build().unwrap().build_file(&vdz, None).unwrap();
+        assert_eq!(errs(&built.messages), errs(&base.messages), "{:?}", built.messages);
+
+        let info = b.projects().unwrap().open(&vdz).unwrap();
+        let out = b.reports().unwrap().export_xml(info.id, &dir.join("export"), true).unwrap();
+        b.projects().unwrap().close(info.id, false).unwrap();
+        let text = std::fs::read_to_string(&out.path).unwrap();
+        let doc = vijeo_backend_vd63::vxml::parse(&text).unwrap();
+        let orig_text = vijeo_backend_vd63::reports::decode_text(&std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/reference/vd-6.3/corpus/xml/Compact_Modbus SL_M221 Book.vxml")).unwrap());
+        let orig = vijeo_backend_vd63::vxml::parse(&orig_text).unwrap();
+        let refs = |doc: &roxmltree::Document| -> std::collections::BTreeMap<String, Vec<String>> {
+            vijeo_backend_vd63::vxml::targets(doc).into_iter().flat_map(vijeo_backend_vd63::vxml::cross_references).map(|r| (r.variable, r.references)).collect()
+        };
+        let (was, now) = (refs(&orig), refs(&doc));
+        let mut checked = 0;
+        for (old, leaf) in pairs {
+            let new = format!("MyController.{leaf}");
+            for (n, w) in was.iter().filter(|(n, _)| n.starts_with(&format!("{old}."))) {
+                let moved = format!("{new}{}", &n[old.len()..]);
+                assert_eq!(now.get(&moved), Some(w), "{n} → {moved}");
+                assert!(!now.contains_key(n), "{n}");
+                checked += usize::from(!w.is_empty());
+            }
+        }
+        eprintln!("{checked} variables con usos comprobadas");
+        assert!(checked >= 10);
+        let scripts: Vec<String> = vijeo_backend_vd63::vxml::targets(&doc).into_iter().flat_map(vijeo_backend_vd63::vxml::scripts).map(|s| s.2).collect();
+        assert!(scripts.iter().any(|s| s.contains("MyController.FechaHora.iGetRTCHour")) && !scripts.iter().any(|s| s.contains("DateAndTime")), "{scripts:?}");
+        b.shutdown().unwrap();
+    }
+
     /// Variables sin Vijeo en un proyecto de dos targets (`McpDosTargets.vdz` de `docs/`, hecho con Vijeo: `Comun` en
     /// los dos con tipos distintos): se editan los dos targets de una copia, la copia compila sin errores, su XML tiene las
     /// variables de cada target como se escribieron (también leídas con el proyecto abierto) y lo que guarda Vijeo se

@@ -1241,19 +1241,6 @@ fn initial(ty: &str, v: &str) -> Result<Prop, String> {
     }
 }
 
-/// Dónde se usa una variable en el resto del proyecto (pantallas, scripts, recetas…): streams que contienen su nombre
-/// completo o su enlace `{T,2:1.<id>,` (en UTF-16 o ASCII). `NameServer` y `TagDatabase` no cuentan.
-pub fn usages(streams: &[(String, Vec<u8>)], full_name: &str, id: u32) -> Vec<String> {
-    let needles: Vec<String> = vec![format!("TagDB.{full_name}"), format!("{{T,2:1.{id},"), format!("{{T,3:1.{id}."), full_name.to_owned()];
-    let encoded: Vec<Vec<u8>> = needles.iter().flat_map(|n| [utf16_bytes(n), n.as_bytes().to_vec()]).collect();
-    streams
-        .iter()
-        .filter(|(p, _)| !p.ends_with("TagDatabase") && !p.ends_with("NameServer"))
-        .filter(|(_, b)| encoded.iter().any(|n| find_from(b, n, 0).is_some()))
-        .map(|(p, _)| p.clone())
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

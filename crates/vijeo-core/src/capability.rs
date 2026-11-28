@@ -15,8 +15,6 @@ pub enum Capability {
     Build,
     /// Export Project (`.vxml`) y lectura de variables, paneles y acciones de ese XML.
     Reports,
-    /// Referencias cruzadas de las variables, calculadas del XML del proyecto.
-    CrossReferences,
     /// Existencia y tipo de una variable, del XML del proyecto.
     VariableLookup,
     /// Paneles de un target, del XML del proyecto.
@@ -58,12 +56,11 @@ pub enum Capability {
 }
 
 impl Capability {
-    pub const ALL: [Capability; 24] = [
+    pub const ALL: [Capability; 23] = [
         Capability::ProjectLifecycle,
         Capability::TargetManage,
         Capability::Build,
         Capability::Reports,
-        Capability::CrossReferences,
         Capability::VariableLookup,
         Capability::PanelList,
         Capability::ModelCatalog,
@@ -91,7 +88,6 @@ impl Capability {
             Capability::TargetManage => "target_manage",
             Capability::Build => "build",
             Capability::Reports => "reports",
-            Capability::CrossReferences => "cross_references",
             Capability::VariableLookup => "variable_lookup",
             Capability::PanelList => "panel_list",
             Capability::ModelCatalog => "model_catalog",

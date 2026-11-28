@@ -44,7 +44,7 @@ const TOOL_CAPS: &[(&str, Capability)] = &[
     ("panel_report", Capability::Reports),
     ("action_list", Capability::Reports),
     ("variable_lookup", Capability::VariableLookup),
-    ("project_cross_references", Capability::CrossReferences),
+    ("vdz_cross_references", Capability::OfflineVariables),
     ("script_lint", Capability::ScriptLint),
     ("project_goto", Capability::PanelOpen),
     ("panel_create", Capability::PanelCreate),
@@ -90,8 +90,10 @@ abierto con `project`, incluido lo no guardado) y vdz_variable_edit crea, cambia
 lo preferible a abrir el proyecto e importar un CSV. Como target_config_set, no escribe sobre proyectos abiertos en el \
 MCP; después, project_build con `path`. Cada target tiene sus variables: con varios, vdz_variable_list da todas (cada \
 una con su `target`) o las de `target`, y vdz_variable_edit pide `target`. Alarmas, estructuras y tipos de datos \
-todavía no.
-- panel_report, action_list, panel_list, variable_lookup y project_cross_references leen el XML \
+todavía no. vdz_cross_references dice, también sin Vijeo (de un .vdz o de un proyecto abierto), dónde se usa cada \
+variable (pantalla y objeto, acciones, alarmas, otras variables), cuáles no se usan y qué enlaces de las pantallas \
+apuntan a variables que ya no existen.
+- panel_report, action_list, panel_list y variable_lookup leen el XML \
 del proyecto (Export Project, unos segundos la primera vez; se reutiliza mientras el proyecto no cambie). \
 Necesitan SupportsXMLImportExport=1 en el registro de Vijeo.
 - project_export_xml escribe el XML completo del proyecto (.vxml, public.xsd: pantallas, objetos, animaciones, \
@@ -554,6 +556,27 @@ pub struct XrefOut {
     pub references: Vec<CrossReference>,
     /// Variables que no aparecen en ningún panel, acción, alarma… (`Target/Variable`).
     pub unused: Vec<String>,
+    /// Enlaces de las pantallas a variables que ya no existen (Vijeo da error al compilar).
+    pub broken: Vec<BrokenLink>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct VdzCrossReferencesParams {
+    /// Ruta absoluta del .vdz (sólo se lee; no hace falta abrirlo en Vijeo). Indica `path` o `project`.
+    #[serde(default)]
+    pub path: Option<PathBuf>,
+    /// Proyecto abierto en el MCP: se lee como está ahora en Vijeo, aunque no se haya guardado en el .vdz.
+    #[serde(default)]
+    pub project: Option<u32>,
+    /// Sólo este target (por defecto, todos).
+    #[serde(default)]
+    pub target: Option<String>,
+    /// Sólo las variables cuyo nombre contiene este texto (sin distinguir mayúsculas).
+    #[serde(default)]
+    pub variable: Option<String>,
+    /// Incluir las variables de sistema (las que empiezan por «_»).
+    #[serde(default)]
+    pub include_system: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -894,8 +917,8 @@ impl VijeoServer {
     /// Crea, cambia y borra variables y carpetas directamente en un .vdz, sin abrir Vijeo (en menos de un segundo).
     /// Operaciones (`op`): add (name `Carpeta.Nombre`, data_type BOOL/INT/UINT/DINT/UDINT/Integer/REAL/STRING, y
     /// source, scan_group, address, description, initial_value, logging_group, string_bytes), set (los mismos ajustes,
-    /// también address/description de un miembro `Instancia.Miembro`), delete (se niega si pantallas, acciones o scripts
-    /// la usan, salvo force), add_folder, delete_folder (vacía). Se aplican en orden; si una falla no se escribe nada. El
+    /// también address/description de un miembro `Instancia.Miembro`), delete (se niega si pantallas, acciones, alarmas u
+    /// otras variables la usan, y dice dónde, como vdz_cross_references; con force la borra igual), add_folder, delete_folder (vacía). Se aplican en orden; si una falla no se escribe nada. El
     /// fichero se relee y sólo se reemplaza si quedó como se esperaba. Después: project_build con `path` para comprobar.
     #[tool(annotations(destructive_hint = true, idempotent_hint = false, open_world_hint = false))]
     async fn vdz_variable_edit(&self, Parameters(p): Parameters<VariablesEditRequest>) -> ToolResult<VariablesEditResult> {
@@ -928,14 +951,27 @@ impl VijeoServer {
         self.blocking(move |b| ops(b.variables(), Capability::VariableLookup, b)?.lookup(ProjectId(p.project), &p.target, &p.name)).await
     }
 
-    /// Dónde se usa cada variable (paneles y sus objetos, acciones, alarmas, registro de datos…) y qué variables no se usan,
-    /// buscando su nombre completo en atributos, scripts y expresiones del XML del proyecto.
+    /// Dónde se usa cada variable, leído directamente del proyecto (en un instante, sin el XML de Vijeo): de un .vdz sin
+    /// abrirlo (`path`) o de un proyecto abierto (`project`, con lo que tenga sin guardar). Pantallas con el objeto
+    /// (`Panel «Start» › Switch «Switch1»`, ventanas emergentes, paneles maestros), acciones globales, alarmas y otras
+    /// variables (referencias indirectas); qué variables no se usan y qué enlaces de las pantallas apuntan a variables
+    /// que ya no existen. Lo mismo que se ve en el XML de Vijeo (comprobado objeto por objeto).
     #[tool(annotations(read_only_hint = true, open_world_hint = false))]
-    async fn project_cross_references(&self, Parameters(p): Parameters<ReportTargetParams>) -> ToolResult<XrefOut> {
+    async fn vdz_cross_references(&self, Parameters(p): Parameters<VdzCrossReferencesParams>) -> ToolResult<XrefOut> {
         self.blocking(move |b| {
-            let all = ops(b.reports(), Capability::CrossReferences, b)?.cross_references(ProjectId(p.project), p.target.as_deref())?;
-            let (references, unused): (Vec<CrossReference>, Vec<CrossReference>) = all.into_iter().partition(|r| !r.references.is_empty());
-            Ok(XrefOut { count: references.len(), references, unused: unused.into_iter().map(|r| format!("{}/{}", r.target, r.variable)).collect() })
+            let cfg = ops(b.config(), Capability::OfflineVariables, b)?;
+            let (target, system) = (p.target.as_deref(), p.include_system);
+            let usage = match (p.project, &p.path) {
+                (Some(id), None) => cfg.project_usage(ProjectId(id), target, system)?,
+                (None, Some(path)) => cfg.file_usage(path, target, system)?,
+                _ => return Err(VijeoError::invalid("project/path", "indica exactamente uno de los dos")),
+            };
+            let text = p.variable.as_deref().map(str::to_lowercase);
+            let wanted = |name: &str| text.as_deref().is_none_or(|t| name.to_lowercase().contains(t));
+            let (references, unused): (Vec<CrossReference>, Vec<CrossReference>) =
+                usage.references.into_iter().filter(|r| wanted(&r.variable)).partition(|r| !r.references.is_empty());
+            let broken: Vec<BrokenLink> = usage.broken.into_iter().filter(|l| wanted(&l.name)).collect();
+            Ok(XrefOut { count: references.len(), references, unused: unused.into_iter().map(|r| format!("{}/{}", r.target, r.variable)).collect(), broken })
         })
         .await
     }

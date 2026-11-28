@@ -463,6 +463,14 @@ impl Node {
     }
 
     /// Cadenas de los datos propios (no de los hijos), en orden.
+    /// Bytes propios del objeto, sin los de sus hijos (cabecera y cola de un grupo).
+    pub fn own_bytes(&self) -> Vec<u8> {
+        match self {
+            Node::Leaf(v) => v.clone(),
+            Node::Group { head, tail, .. } => [head.as_slice(), tail.as_slice()].concat(),
+        }
+    }
+
     pub fn strings(&self) -> Vec<String> {
         let mut out = strings_in(self.own(), self.data_start());
         if let Node::Group { tail, .. } = self {
@@ -518,7 +526,7 @@ fn string_at(v: &[u8], i: usize) -> Option<(usize, usize, String, bool)> {
     None
 }
 
-fn strings_in(v: &[u8], from: usize) -> Vec<String> {
+pub fn strings_in(v: &[u8], from: usize) -> Vec<String> {
     let mut out = Vec::new();
     let mut i = from;
     while i + 4 <= v.len() {
@@ -753,6 +761,70 @@ impl Clip {
         let (_, n) = children.remove(*path.last().unwrap());
         self.refit_ancestors(&path[..path.len() - 1].iter().copied().chain([0]).collect::<Vec<_>>())?;
         Ok(n)
+    }
+}
+
+/// Objetos de un panel tal como los guarda el `.vdz` (stream `…/PanelN/GraphicalObject`): un byte de versión, la
+/// lista `u32 tamaño | 16 bytes | objeto` de los hijos de un grupo (acabada en `u32 0`) y un pie.
+#[derive(Debug, Clone)]
+pub struct PanelObjects {
+    pub version: u8,
+    pub objects: Vec<([u8; 16], Node)>,
+    pub footer: Vec<u8>,
+}
+
+impl PanelObjects {
+    pub fn parse(b: &[u8]) -> Result<PanelObjects, String> {
+        let version = *b.first().ok_or("GraphicalObject vacío")?;
+        let mut q = 1;
+        let mut objects = Vec::new();
+        loop {
+            let size = rd_u32(b, q).ok_or_else(|| format!("GraphicalObject cortado en el byte {q}"))? as usize;
+            if size == 0 {
+                q += 4;
+                break;
+            }
+            let start = q + 4 + 16;
+            let end = start.checked_add(size).filter(|&e| e <= b.len()).ok_or_else(|| format!("objeto de {size} bytes fuera del stream en el byte {q}"))?;
+            let junk: [u8; 16] = b[q + 4..start].try_into().unwrap();
+            let (node, list_end) = Node::parse(b, start, end, 1).ok_or_else(|| format!("no hay una cabecera de objeto válida en el byte {start}"))?;
+            objects.push((junk, node.complete(b, start, end, list_end)));
+            q = end;
+        }
+        let p = PanelObjects { version, objects, footer: b[q..].to_vec() };
+        if p.stream() != b {
+            return Err("los objetos leídos no reproducen el stream del panel (formato no reconocido)".into());
+        }
+        Ok(p)
+    }
+
+    pub fn stream(&self) -> Vec<u8> {
+        let mut out = vec![self.version];
+        for (junk, n) in &self.objects {
+            let bytes = n.bytes();
+            out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+            out.extend_from_slice(junk);
+            out.extend_from_slice(&bytes);
+        }
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&self.footer);
+        out
+    }
+
+    /// Todos los objetos (también los de dentro de los grupos) con su ruta de nombres (`Grupo/Objeto`).
+    pub fn walk(&self) -> Vec<(String, &Node)> {
+        fn go<'a>(n: &'a Node, prefix: &str, out: &mut Vec<(String, &'a Node)>) {
+            let path = if prefix.is_empty() { n.name() } else { format!("{prefix}/{}", n.name()) };
+            out.push((path.clone(), n));
+            for (_, c) in n.children() {
+                go(c, &path, out);
+            }
+        }
+        let mut out = Vec::new();
+        for (_, n) in &self.objects {
+            go(n, "", &mut out);
+        }
+        out
     }
 }
 

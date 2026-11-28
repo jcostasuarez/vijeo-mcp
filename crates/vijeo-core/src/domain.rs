@@ -647,13 +647,32 @@ pub struct XmlExportResult {
     pub panels: usize,
 }
 
-/// Dónde se usa una variable (calculado del XML del proyecto).
+/// Dónde se usa una variable.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct CrossReference {
     pub target: String,
     pub variable: String,
-    /// Sitios donde aparece: `Panel «Start» › Switch «Switch1» @Variable`, `Acción global 2 › Script`…
+    /// Sitios donde aparece: `Panel «Start» › Switch «Switch1»`, `Window «Pop» › Panel «Panel1» › DataDisplay «D1»`,
+    /// `Actions`, `Alarms`, `Variables › Variable «V» › Parameter` (referencia indirecta), `… › Alarm (n)`.
     pub references: Vec<String>,
+}
+
+/// Enlace a una variable (`{T,2:1.<id>,Nombre}`) cuyo id ya no está en la base de variables.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct BrokenLink {
+    pub target: String,
+    pub location: String,
+    /// Nombre que guarda el enlace (el que tenía la variable).
+    pub name: String,
+    pub id: u32,
+}
+
+/// Uso de las variables de un proyecto, leído del `.vdz`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct VariableUsage {
+    /// Todas las variables, también las que no se usan (con `references` vacío).
+    pub references: Vec<CrossReference>,
+    pub broken: Vec<BrokenLink>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]

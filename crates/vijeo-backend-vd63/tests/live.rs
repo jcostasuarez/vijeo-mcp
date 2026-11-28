@@ -214,13 +214,19 @@ mod live {
         let actions = reports.actions(p, Some(&target)).unwrap();
         eprintln!("{actions:#?}");
         assert!(!actions.is_empty());
-        let xref = reports.cross_references(p, None).unwrap();
-        assert!(xref.iter().any(|r| !r.references.is_empty()));
+        // Usos leídos de la copia de trabajo (sin el XML): las mismas variables usadas que en el XML que se exporta abajo.
+        let usage = backend.config().unwrap().project_usage(p, None, false).unwrap();
+        assert!(usage.references.iter().any(|r| !r.references.is_empty()));
+        assert!(usage.broken.is_empty(), "{:?}", usage.broken);
 
         let out = reports.export_xml(p, &dir.join("export"), false).unwrap();
         eprintln!("{out:?}");
         let text = std::fs::read_to_string(&out.path).unwrap();
         let doc = vijeo_backend_vd63::vxml::parse(&text).unwrap();
+        let xml_used: std::collections::BTreeSet<String> =
+            vijeo_backend_vd63::vxml::targets(&doc).into_iter().flat_map(vijeo_backend_vd63::vxml::cross_references).filter(|r| !r.references.is_empty()).map(|r| r.variable).collect();
+        let used: std::collections::BTreeSet<String> = usage.references.iter().filter(|r| !r.references.is_empty() && !r.variable.starts_with('_')).map(|r| r.variable.clone()).collect();
+        assert_eq!(used, xml_used, "variables usadas: offline / XML");
         assert_eq!(vijeo_backend_vd63::vxml::project_name(&doc).as_deref(), Some(info.name.as_str()), "nombre del proyecto, no el temporal");
         assert_eq!(out.panels, listed.len());
         assert_eq!(reports.export_xml(p, &dir.join("export"), false).unwrap_err().code(), "invalid_argument", "ya existe");
@@ -1021,6 +1027,38 @@ mod live {
         let again = cfg.file_variables(&resaved, None, true, false).unwrap();
         let json = |v: &[VariableInfo]| serde_json::to_value(v).unwrap();
         assert_eq!(json(&again), json(&offline));
+        b.shutdown().unwrap();
+    }
+
+    /// Usos sin Vijeo: en una copia del ejemplo Modbus se borra con force una variable que usa una pantalla; los
+    /// enlaces que quedan rotos son los que Vijeo marca al compilar.
+    #[test]
+    fn live_offline_broken_links() {
+        use vijeo_core::VariablesEditRequest;
+        let Some(src) = modbus() else { return };
+        let b = backend();
+        let cfg = b.config().unwrap();
+        let dir = work_dir("offline_broken");
+        let vdz = dir.join("McpRotas.vdz");
+        std::fs::copy(&src, &vdz).unwrap();
+        let before = cfg.file_usage(&vdz, None, false).unwrap();
+        assert!(before.broken.is_empty(), "{:?}", before.broken);
+        let gone = "MyController.Energy.reTotalEnergy";
+        let at = before.references.iter().find(|r| r.variable == gone).unwrap().references.clone();
+        eprintln!("{gone}: {at:?}");
+        let req: VariablesEditRequest = serde_json::from_value(serde_json::json!({"path": vdz, "edits": [{"op": "delete", "name": gone, "force": true}]})).unwrap();
+        cfg.edit_file_variables(&req).unwrap();
+        let after = cfg.file_usage(&vdz, None, false).unwrap();
+        eprintln!("rotos: {:#?}", after.broken);
+        let locations: Vec<&str> = after.broken.iter().map(|l| l.location.as_str()).collect();
+        assert!(at.iter().all(|l| locations.contains(&l.as_str())), "{at:?} / {locations:?}");
+        assert!(after.broken.iter().all(|l| l.name == "reTotalEnergy"));
+
+        let built = b.build().unwrap().build_file(&vdz, None).unwrap();
+        let errors: Vec<&vijeo_core::BuildMessage> = built.messages.iter().filter(|m| m.severity == vijeo_core::MessageSeverity::Error).collect();
+        eprintln!("{errors:#?}");
+        assert!(!errors.is_empty());
+        assert!(errors.iter().any(|m| m.text.contains("reTotalEnergy") || m.text.contains("TotalEnergy")), "{errors:?}");
         b.shutdown().unwrap();
     }
 
